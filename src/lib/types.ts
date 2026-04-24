@@ -14,6 +14,14 @@ export type SaveResult = {
   pathMap: PathMapping[];
 };
 
+export type SceneMetadata = {
+  emoji?: string;
+};
+
+export type ProjectMetadata = {
+  scenes: Record<string, SceneMetadata>;
+};
+
 export type ManuscriptSegment = {
   path: string;
   relativePath: string;

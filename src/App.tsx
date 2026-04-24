@@ -10,6 +10,7 @@ import type {
   CreateAndInsertResult,
   ManuscriptSegment,
   ProjectFile,
+  ProjectMetadata,
   ReorderResult,
   SaveResult,
 } from "./lib/types";
@@ -45,6 +46,7 @@ function countStats(text: string) {
 }
 
 const numberFormatter = new Intl.NumberFormat();
+const emptyProjectMetadata: ProjectMetadata = { scenes: {} };
 
 function formatCount(value: number): string {
   return numberFormatter.format(value);
@@ -61,11 +63,52 @@ function formatFolderLabel(path: string): string {
   return name ? `${name} - ${path}` : path;
 }
 
+function filesAreEqual(left: ProjectFile[], right: ProjectFile[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((leftFile, index) => {
+    const rightFile = right[index];
+    return (
+      rightFile &&
+      leftFile.path === rightFile.path &&
+      leftFile.relativePath === rightFile.relativePath &&
+      leftFile.content === rightFile.content
+    );
+  });
+}
+
+function metadataAreEqual(
+  left: ProjectMetadata,
+  right: ProjectMetadata,
+): boolean {
+  return JSON.stringify(left.scenes) === JSON.stringify(right.scenes);
+}
+
+function reconcileSelectedPaths(
+  currentSelection: string[],
+  previousFiles: ProjectFile[],
+  nextFiles: ProjectFile[],
+): string[] {
+  const nextPathSet = new Set(nextFiles.map((file) => file.path));
+  const allFilesWereSelected =
+    previousFiles.length > 0 &&
+    previousFiles.every((file) => currentSelection.includes(file.path));
+
+  if (allFilesWereSelected) {
+    return nextFiles.map((file) => file.path);
+  }
+
+  return currentSelection.filter((path) => nextPathSet.has(path));
+}
+
 export function App() {
   const [folderPath, setFolderPath] = useState("");
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [manuscript, setManuscript] = useState("");
+  const [metadata, setMetadata] = useState<ProjectMetadata>(emptyProjectMetadata);
   const [segments, setSegments] = useState<ManuscriptSegment[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -73,6 +116,15 @@ export function App() {
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [activeSegmentPath, setActiveSegmentPath] = useState<string | null>(null);
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
+  const externalRefreshInFlightRef = useRef(false);
+  const metadataSaveInFlightRef = useRef(0);
+  const folderPathRef = useRef(folderPath);
+  const filesRef = useRef(files);
+  const selectedPathsRef = useRef(selectedPaths);
+  const metadataRef = useRef(metadata);
+  const dirtyRef = useRef(false);
+  const loadingRef = useRef(loading);
+  const savingRef = useRef(saving);
   const pointerDragSourceRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const openFolderDialogRef = useRef<() => void>(() => {});
@@ -110,8 +162,81 @@ export function App() {
         ? "Unsaved"
         : "Saved";
 
+  useEffect(() => {
+    folderPathRef.current = folderPath;
+    filesRef.current = files;
+    selectedPathsRef.current = selectedPaths;
+    metadataRef.current = metadata;
+    dirtyRef.current = dirty;
+    loadingRef.current = loading;
+    savingRef.current = saving;
+  });
+
   function alertError(message: string) {
     window.alert(message);
+  }
+
+  function persistProjectMetadata(nextMetadata: ProjectMetadata, nextFolderPath = folderPath) {
+    if (!isTauriRuntimeAvailable() || !nextFolderPath.trim()) {
+      return;
+    }
+
+    metadataSaveInFlightRef.current += 1;
+
+    void invoke("save_project_metadata", {
+      folderPath: nextFolderPath.trim(),
+      metadata: nextMetadata,
+    }).catch((error) => {
+      alertError(`Metadata save failed: ${formatError(error)}`);
+    }).finally(() => {
+      metadataSaveInFlightRef.current = Math.max(
+        0,
+        metadataSaveInFlightRef.current - 1,
+      );
+    });
+  }
+
+  function metadataForFiles(
+    nextMetadata: ProjectMetadata,
+    nextFiles: ProjectFile[],
+  ): ProjectMetadata {
+    const nextScenes: ProjectMetadata["scenes"] = {};
+    const validPaths = new Set(nextFiles.map((file) => file.relativePath));
+
+    for (const [relativePath, sceneMetadata] of Object.entries(nextMetadata.scenes)) {
+      if (validPaths.has(relativePath)) {
+        nextScenes[relativePath] = sceneMetadata;
+      }
+    }
+
+    return { scenes: nextScenes };
+  }
+
+  function remapMetadata(
+    currentMetadata: ProjectMetadata,
+    currentFiles: ProjectFile[],
+    nextFiles: ProjectFile[],
+    pathMap: { oldPath: string; newPath: string }[],
+  ): ProjectMetadata {
+    const nextScenes = { ...currentMetadata.scenes };
+
+    for (const mapping of pathMap) {
+      const oldFile = currentFiles.find((file) => file.path === mapping.oldPath);
+      const newFile = nextFiles.find((file) => file.path === mapping.newPath);
+
+      if (!oldFile || !newFile || oldFile.relativePath === newFile.relativePath) {
+        continue;
+      }
+
+      const sceneMetadata = nextScenes[oldFile.relativePath];
+      delete nextScenes[oldFile.relativePath];
+
+      if (sceneMetadata) {
+        nextScenes[newFile.relativePath] = sceneMetadata;
+      }
+    }
+
+    return metadataForFiles({ scenes: nextScenes }, nextFiles);
   }
 
   useEffect(() => {
@@ -197,15 +322,26 @@ export function App() {
         files: payload,
       });
 
-      setFiles((current) =>
-        current.map((file) => {
+      const previousFiles = files;
+      const nextFiles = previousFiles.map((file) => {
           const mappedPath =
             result.pathMap.find((item) => item.oldPath === file.path)?.newPath ??
             file.path;
           const updated = result.files.find((item) => item.path === mappedPath);
           return updated ?? file;
-        }),
+      });
+      const nextMetadata = remapMetadata(
+        metadata,
+        previousFiles,
+        nextFiles,
+        result.pathMap,
       );
+
+      setFiles(nextFiles);
+      setMetadata(nextMetadata);
+      if (result.pathMap.length > 0) {
+        persistProjectMetadata(nextMetadata);
+      }
       setSelectedPaths((current) =>
         current.map(
           (path) =>
@@ -286,11 +422,15 @@ export function App() {
       const loadedFiles = await invoke<ProjectFile[]>("load_project", {
         folderPath: trimmedFolderPath,
       });
+      const loadedMetadata = await invoke<ProjectMetadata>("load_project_metadata", {
+        folderPath: trimmedFolderPath,
+      });
       await invoke("save_app_settings", {
         settings: { lastOpenedFolder: trimmedFolderPath },
       });
       setFolderPath(trimmedFolderPath);
       setFiles(loadedFiles);
+      setMetadata(metadataForFiles(loadedMetadata, loadedFiles));
       setSelectedPaths(loadedFiles.map((file) => file.path));
       setLastFocusedIndex(loadedFiles.length > 0 ? 0 : null);
     } catch (error) {
@@ -299,6 +439,92 @@ export function App() {
       setLoading(false);
     }
   }
+
+  async function refreshProjectFromDisk() {
+    if (
+      !isTauriRuntimeAvailable() ||
+      externalRefreshInFlightRef.current ||
+      !folderPathRef.current.trim() ||
+      dirtyRef.current ||
+      loadingRef.current ||
+      savingRef.current ||
+      metadataSaveInFlightRef.current > 0
+    ) {
+      return;
+    }
+
+    externalRefreshInFlightRef.current = true;
+
+    try {
+      const currentFolderPath = folderPathRef.current.trim();
+      const loadedFiles = await invoke<ProjectFile[]>("load_project", {
+        folderPath: currentFolderPath,
+      });
+      const loadedMetadata = await invoke<ProjectMetadata>("load_project_metadata", {
+        folderPath: currentFolderPath,
+      });
+      const nextMetadata = metadataForFiles(loadedMetadata, loadedFiles);
+      const currentFiles = filesRef.current;
+      const currentMetadata = metadataRef.current;
+
+      if (
+        filesAreEqual(currentFiles, loadedFiles) &&
+        metadataAreEqual(currentMetadata, nextMetadata)
+      ) {
+        return;
+      }
+
+      const nextSelectedPaths = reconcileSelectedPaths(
+        selectedPathsRef.current,
+        currentFiles,
+        loadedFiles,
+      );
+      const nextSelectedPathSet = new Set(nextSelectedPaths);
+
+      setFiles(loadedFiles);
+      setMetadata(nextMetadata);
+      setSelectedPaths(nextSelectedPaths);
+      const nextFocusedIndex = loadedFiles.findIndex((file) =>
+        nextSelectedPathSet.has(file.path),
+      );
+      setLastFocusedIndex(nextFocusedIndex >= 0 ? nextFocusedIndex : null);
+      setActiveSegmentPath((current) =>
+        current && loadedFiles.some((file) => file.path === current)
+          ? current
+          : null,
+      );
+    } catch {
+      // External refresh is opportunistic. Explicit load/save actions still alert.
+    } finally {
+      externalRefreshInFlightRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (!isTauriRuntimeAvailable()) {
+      return;
+    }
+
+    const refresh = () => {
+      void refreshProjectFromDisk();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+
+    refresh();
+    const intervalId = window.setInterval(refresh, 1000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   async function openFolderDialog() {
     if (!isTauriRuntimeAvailable()) {
@@ -376,8 +602,18 @@ export function App() {
       const focusedIndex = result.files.findIndex(
         (file) => file.path === result.createdPath,
       );
+      const nextMetadata = remapMetadata(
+        metadata,
+        files,
+        result.files,
+        result.pathMap,
+      );
 
       setFiles(result.files);
+      setMetadata(nextMetadata);
+      if (result.pathMap.length > 0) {
+        persistProjectMetadata(nextMetadata);
+      }
       setSelectedPaths([result.createdPath]);
       setLastFocusedIndex(focusedIndex);
     } catch (error) {
@@ -422,9 +658,12 @@ export function App() {
         ),
       );
 
-      setFiles((current) =>
-        current.filter((file) => !selectedPaths.includes(file.path)),
-      );
+      const nextFiles = files.filter((file) => !selectedPaths.includes(file.path));
+      const nextMetadata = metadataForFiles(metadata, nextFiles);
+
+      setFiles(nextFiles);
+      setMetadata(nextMetadata);
+      persistProjectMetadata(nextMetadata);
       setSelectedPaths([]);
       setLastFocusedIndex(null);
     } catch (error) {
@@ -459,13 +698,23 @@ export function App() {
         },
       });
 
-      setFiles((current) =>
-        current.map((file) => (file.path === path ? renamedFile : file)),
+      const nextFiles = files.map((file) =>
+        file.path === path ? renamedFile : file,
       );
+      const nextMetadata = remapMetadata(metadata, files, nextFiles, [
+        { oldPath: path, newPath: renamedFile.path },
+      ]);
+
+      setFiles(nextFiles);
+      setMetadata(nextMetadata);
+      persistProjectMetadata(nextMetadata);
       setSelectedPaths((current) =>
         current.map((selectedPath) =>
           selectedPath === path ? renamedFile.path : selectedPath,
         ),
+      );
+      setActiveSegmentPath((current) =>
+        current === path ? renamedFile.path : current,
       );
       return true;
     } catch (error) {
@@ -550,8 +799,21 @@ export function App() {
         nextFocusedPath === null
           ? null
           : result.files.findIndex((file) => file.path === nextFocusedPath);
+      const nextMetadata = remapMetadata(
+        metadata,
+        files,
+        result.files,
+        result.pathMap,
+      );
 
       setFiles(result.files);
+      setMetadata(nextMetadata);
+      persistProjectMetadata(nextMetadata);
+      setActiveSegmentPath((current) =>
+        current
+          ? result.pathMap.find((item) => item.oldPath === current)?.newPath ?? current
+          : null,
+      );
       setSelectedPaths(mappedSelection);
       setLastFocusedIndex(
         typeof nextFocusedIndex === "number" && nextFocusedIndex >= 0
@@ -592,6 +854,33 @@ export function App() {
     }
 
     void applySelection([path], index);
+  }
+
+  function setSceneEmoji(emoji: string) {
+    const targetPaths =
+      selectedPaths.length > 0
+        ? selectedPaths
+        : activeSegmentPath
+          ? [activeSegmentPath]
+          : [];
+
+    if (targetPaths.length === 0) {
+      return;
+    }
+
+    const targetRelativePaths = files
+      .filter((file) => targetPaths.includes(file.path))
+      .map((file) => file.relativePath);
+    const nextMetadata: ProjectMetadata = {
+      scenes: { ...metadata.scenes },
+    };
+
+    for (const relativePath of targetRelativePaths) {
+      nextMetadata.scenes[relativePath] = { emoji };
+    }
+
+    setMetadata(nextMetadata);
+    persistProjectMetadata(nextMetadata);
   }
 
   useEffect(() => {
@@ -686,12 +975,14 @@ export function App() {
           files={files}
           selectedPaths={selectedPaths}
           activePath={activeSegmentPath}
+          metadata={metadata}
           dropIndex={dropIndex}
           onRowClick={handleRowClick}
           onSelectAll={selectAll}
           onCreateFile={createFile}
           onDeleteSelected={deleteSelected}
           onRenameFile={renameFile}
+          onSetSceneEmoji={setSceneEmoji}
           onPointerDragStart={(path) => {
             pointerDragSourceRef.current = path;
             setDropIndex(null);

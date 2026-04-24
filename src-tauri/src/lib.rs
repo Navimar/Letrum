@@ -88,7 +88,29 @@ struct AppSettings {
     last_opened_folder: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+struct SceneMetadata {
+    emoji: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct ProjectMetadata {
+    scenes: HashMap<String, SceneMetadata>,
+}
+
 const AUTO_TITLE_MAX_CHARS: usize = 48;
+const PROJECT_AGENTS_MD: &str = r#"# Letrum Manuscript Project
+
+This folder is managed by the Letrum manuscript editor.
+
+The markdown and text files in the project root are ordered scene files, not a
+generic notes folder. Preserve the existing numbered filename structure and do
+not create extra folders, move scenes into subdirectories, or rename files
+outside the editor's numbering/title conventions unless the user explicitly asks.
+
+Project metadata lives in `.letrum/`. Do not edit `.letrum/scenes.json` by hand
+unless the task is specifically about Letrum metadata.
+"#;
 
 fn strip_numeric_prefix(name: &str) -> &str {
     let bytes = name.as_bytes();
@@ -221,6 +243,30 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(config_dir.join("settings.json"))
 }
 
+fn project_support_dir(root: &Path) -> PathBuf {
+    root.join(".letrum")
+}
+
+fn project_metadata_path(root: &Path) -> PathBuf {
+    project_support_dir(root).join("scenes.json")
+}
+
+fn project_agents_path(root: &Path) -> PathBuf {
+    root.join("AGENTS.md")
+}
+
+fn ensure_project_agents_file(root: &Path) -> Result<(), String> {
+    let support_dir = project_support_dir(root);
+    fs::create_dir_all(&support_dir).map_err(|error| error.to_string())?;
+
+    let agents_path = project_agents_path(root);
+    if agents_path.exists() {
+        return Ok(());
+    }
+
+    fs::write(agents_path, PROJECT_AGENTS_MD).map_err(|error| error.to_string())
+}
+
 fn reorder_files_internal(root: &Path, ordered_paths: &[String]) -> Result<ReorderResult, String> {
     if ordered_paths.is_empty() {
         return Err("No files provided for reorder.".into());
@@ -279,25 +325,24 @@ fn reorder_files_internal(root: &Path, ordered_paths: &[String]) -> Result<Reord
     }
 
     let mut files = Vec::new();
-    collect_files(root, root, &mut files)?;
+    collect_files(root, &mut files)?;
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
     Ok(ReorderResult { files, path_map })
 }
 
-fn collect_files(
-    root: &Path,
-    current: &Path,
-    results: &mut Vec<ProjectFile>,
-) -> Result<(), String> {
-    let entries = fs::read_dir(current).map_err(|error| error.to_string())?;
+fn collect_files(root: &Path, results: &mut Vec<ProjectFile>) -> Result<(), String> {
+    let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
 
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
 
         if path.is_dir() {
-            collect_files(root, &path, results)?;
+            continue;
+        }
+
+        if path.file_name().and_then(|value| value.to_str()) == Some("AGENTS.md") {
             continue;
         }
 
@@ -339,9 +384,46 @@ fn load_project(folder_path: String) -> Result<Vec<ProjectFile>, String> {
     }
 
     let mut files = Vec::new();
-    collect_files(&root, &root, &mut files)?;
+    collect_files(&root, &mut files)?;
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
+}
+
+#[tauri::command]
+fn load_project_metadata(folder_path: String) -> Result<ProjectMetadata, String> {
+    let root = PathBuf::from(folder_path);
+
+    if !root.exists() || !root.is_dir() {
+        return Err("Folder does not exist.".into());
+    }
+
+    let path = project_metadata_path(&root);
+    if !path.exists() {
+        return Ok(ProjectMetadata::default());
+    }
+
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&content).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_project_metadata(folder_path: String, metadata: ProjectMetadata) -> Result<(), String> {
+    let root = PathBuf::from(folder_path);
+
+    if !root.exists() || !root.is_dir() {
+        return Err("Folder does not exist.".into());
+    }
+
+    ensure_project_agents_file(&root)?;
+
+    let path = project_metadata_path(&root);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Metadata file has no parent directory.".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+
+    let content = serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?;
+    fs::write(path, content).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -351,6 +433,8 @@ fn save_project(folder_path: String, files: Vec<SaveFile>) -> Result<SaveResult,
     if !root.exists() || !root.is_dir() {
         return Err("Folder does not exist.".into());
     }
+
+    ensure_project_agents_file(&root)?;
 
     let mut saved_files = Vec::new();
     let mut path_map = Vec::new();
@@ -621,6 +705,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             load_project,
+            load_project_metadata,
+            save_project_metadata,
             save_project,
             create_file,
             create_and_insert_file,

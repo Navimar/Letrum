@@ -127,12 +127,12 @@ input {
   justify-self: center;
   align-items: baseline;
   color: var(--app-text-muted);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }
 
 .statusbar__stats strong {
   color: var(--app-text);
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 700;
 }
 
@@ -166,7 +166,8 @@ input {
   gap: 0.35rem;
 }
 
-.sidebar__actions button {
+.sidebar__actions button,
+.emoji-picker__grid button {
   display: inline-grid;
   width: 2rem;
   height: 2rem;
@@ -175,6 +176,54 @@ input {
   padding: 0;
   font-size: 0.95rem;
   line-height: 1;
+}
+
+.emoji-picker {
+  position: relative;
+}
+
+.emoji-picker__panel {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.45rem);
+  left: 0;
+  width: 18rem;
+  padding: 0.6rem;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel-solid);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+}
+
+.emoji-picker__section {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.emoji-picker__label {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.emoji-picker__custom {
+  margin-bottom: 0.55rem;
+}
+
+.emoji-picker__custom input {
+  width: 100%;
+  height: 2rem;
+  border-radius: 7px;
+  padding: 0 0.55rem;
+}
+
+.emoji-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(6, 2rem);
+  gap: 0.35rem;
+  max-height: 14rem;
+  overflow: auto;
 }
 
 .sidebar__action--danger {
@@ -194,9 +243,10 @@ input {
 .file-row {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  gap: 0.45rem;
+  align-items: center;
   width: 100%;
-  padding: 0.55rem 0.5rem 0.55rem 0.75rem;
+  padding: 0.18rem 0.5rem 0.18rem 0.75rem;
   border-radius: 8px;
   border: 0;
   background: transparent;
@@ -244,6 +294,16 @@ input {
 
 .file-row span {
   word-break: break-word;
+}
+
+.file-row__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.1rem;
+  font-size: 0.82rem;
+  line-height: 1;
+  min-height: 1.2rem;
 }
 
 .file-row--editing {
