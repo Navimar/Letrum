@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import { Menu } from "@tauri-apps/api/menu";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "./components/Editor";
 import { Sidebar } from "./components/Sidebar";
-import { buildManuscript, splitManuscript } from "./lib/manuscript";
+import { buildManuscriptDocument, splitManuscript } from "./lib/manuscript";
 import type {
   AppSettings,
   CreateAndInsertResult,
+  ManuscriptSegment,
   ProjectFile,
   ReorderResult,
 } from "./lib/types";
@@ -40,12 +43,29 @@ function countStats(text: string) {
   };
 }
 
+const numberFormatter = new Intl.NumberFormat();
+
+function formatCount(value: number): string {
+  return numberFormatter.format(value);
+}
+
+function formatFolderLabel(path: string): string {
+  if (!path.trim()) {
+    return "No folder loaded";
+  }
+
+  const normalized = path.replace(/\/+$/, "");
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  const name = parts[parts.length - 1];
+  return name ? `${name} - ${path}` : path;
+}
+
 export function App() {
   const [folderPath, setFolderPath] = useState("");
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [manuscript, setManuscript] = useState("");
-  const [status, setStatus] = useState("Enter a folder path and load files.");
+  const [segments, setSegments] = useState<ManuscriptSegment[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lastFocusedIndex, setLastFocusedIndex] = useState<number | null>(null);
@@ -53,37 +73,49 @@ export function App() {
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
   const pointerDragSourceRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
+  const openFolderDialogRef = useRef<() => void>(() => {});
+  const saveSelectedRef = useRef<() => void>(() => {});
 
-  const manuscriptText = useMemo(
-    () => buildManuscript(files, selectedPaths),
+  const manuscriptDocument = useMemo(
+    () => buildManuscriptDocument(files, selectedPaths),
     [files, selectedPaths],
-  );
-  const selectedFileSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
-  const selectedText = useMemo(
-    () =>
-      files
-        .filter((file) => selectedFileSet.has(file.path))
-        .map((file) => file.content)
-        .join("\n"),
-    [files, selectedFileSet],
   );
   const totalText = useMemo(
     () => files.map((file) => file.content).join("\n"),
     [files],
   );
+  const savePayload = useMemo(
+    () => splitManuscript(manuscript, segments),
+    [manuscript, segments],
+  );
+  const selectedText = useMemo(
+    () => savePayload.map((file) => file.content).join("\n"),
+    [savePayload],
+  );
   const activeStats = useMemo(
     () => countStats(selectedPaths.length > 0 ? selectedText : totalText),
     [selectedPaths.length, selectedText, totalText],
   );
-  const totalStats = useMemo(() => countStats(totalText), [totalText]);
-  const dirty = manuscript !== manuscriptText;
-  const selectedCount = selectedPaths.length;
-  const showingSelectionStats =
-    selectedPaths.length > 0 && selectedPaths.length !== files.length;
+  const dirty = savePayload.some((item) => {
+    const file = files.find((currentFile) => currentFile.path === item.path);
+    return !file || file.content !== item.content;
+  });
+  const saveStateLabel = loading
+    ? "Loading..."
+    : saving
+      ? "Saving..."
+      : dirty
+        ? "Unsaved"
+        : "Saved";
+
+  function alertError(message: string) {
+    window.alert(message);
+  }
 
   useEffect(() => {
-    setManuscript(manuscriptText);
-  }, [manuscriptText]);
+    setManuscript(manuscriptDocument.manuscript);
+    setSegments(manuscriptDocument.segments);
+  }, [manuscriptDocument]);
 
   useEffect(() => {
     if (!isTauriRuntimeAvailable()) {
@@ -93,8 +125,9 @@ export function App() {
     void (async () => {
       try {
         const settings = await invoke<AppSettings>("load_app_settings");
-        if (settings.lastOpenedFolder) {
-          setFolderPath(settings.lastOpenedFolder);
+        const lastOpenedFolder = settings.lastOpenedFolder?.trim();
+        if (lastOpenedFolder) {
+          await loadFolder(lastOpenedFolder);
         }
       } catch {
         // Ignore settings load failures and let the app continue.
@@ -130,21 +163,24 @@ export function App() {
     return () => {
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [dropIndex, files, selectedPaths, folderPath, manuscript, dirty]);
+  }, [dropIndex, files, selectedPaths, folderPath, manuscript, dirty, segments]);
 
   async function saveSelected(): Promise<boolean> {
     if (!isTauriRuntimeAvailable()) {
-      setStatus(
+      alertError(
         "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
       );
       return false;
     }
 
+    if (selectedPaths.length === 0) {
+      return true;
+    }
+
     setSaving(true);
-    setStatus("Saving...");
 
     try {
-      const payload = splitManuscript(manuscript, files, selectedPaths);
+      const payload = savePayload;
       await invoke("save_project", { files: payload });
 
       setFiles((current) =>
@@ -153,10 +189,9 @@ export function App() {
           return updated ? { ...file, content: updated.content } : file;
         }),
       );
-      setStatus(`Saved ${payload.length} files.`);
       return true;
     } catch (error) {
-      setStatus(`Save failed: ${formatError(error)}`);
+      alertError(`Save failed: ${formatError(error)}`);
       return false;
     } finally {
       setSaving(false);
@@ -182,16 +217,17 @@ export function App() {
     }
   }
 
-  async function loadFolder() {
+  async function loadFolder(nextFolderPath: string) {
     if (!isTauriRuntimeAvailable()) {
-      setStatus(
+      alertError(
         "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
       );
       return;
     }
 
-    if (!folderPath.trim()) {
-      setStatus("Enter a folder path first.");
+    const trimmedFolderPath = nextFolderPath.trim();
+
+    if (!trimmedFolderPath) {
       return;
     }
 
@@ -201,23 +237,48 @@ export function App() {
     }
 
     setLoading(true);
-    setStatus("Loading files...");
 
     try {
       const loadedFiles = await invoke<ProjectFile[]>("load_project", {
-        folderPath: folderPath.trim(),
+        folderPath: trimmedFolderPath,
       });
       await invoke("save_app_settings", {
-        settings: { lastOpenedFolder: folderPath.trim() },
+        settings: { lastOpenedFolder: trimmedFolderPath },
       });
+      setFolderPath(trimmedFolderPath);
       setFiles(loadedFiles);
       setSelectedPaths(loadedFiles.map((file) => file.path));
       setLastFocusedIndex(loadedFiles.length > 0 ? 0 : null);
-      setStatus(`Loaded ${loadedFiles.length} files.`);
     } catch (error) {
-      setStatus(`Load failed: ${formatError(error)}`);
+      alertError(`Load failed: ${formatError(error)}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function openFolderDialog() {
+    if (!isTauriRuntimeAvailable()) {
+      alertError(
+        "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
+      );
+      return;
+    }
+
+    try {
+      const selected = await open({
+        title: "Open Manuscript Folder",
+        directory: true,
+        multiple: false,
+        defaultPath: folderPath.trim() || undefined,
+      });
+
+      if (typeof selected !== "string") {
+        return;
+      }
+
+      await loadFolder(selected);
+    } catch (error) {
+      alertError(`Folder selection failed: ${formatError(error)}`);
     }
   }
 
@@ -247,14 +308,14 @@ export function App() {
 
   async function createFile() {
     if (!isTauriRuntimeAvailable()) {
-      setStatus(
+      alertError(
         "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
       );
       return;
     }
 
     if (!folderPath.trim()) {
-      setStatus("Load a folder before creating files.");
+      alertError("Load a folder before creating files.");
       return;
     }
 
@@ -279,20 +340,14 @@ export function App() {
       setFiles(result.files);
       setSelectedPaths([result.createdPath]);
       setLastFocusedIndex(focusedIndex);
-      setStatus(
-        `Created ${
-          result.files.find((file) => file.path === result.createdPath)
-            ?.relativePath ?? result.createdPath
-        }.`,
-      );
     } catch (error) {
-      setStatus(`Create failed: ${formatError(error)}`);
+      alertError(`Create failed: ${formatError(error)}`);
     }
   }
 
   async function deleteSelected() {
     if (!isTauriRuntimeAvailable()) {
-      setStatus(
+      alertError(
         "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
       );
       return;
@@ -328,15 +383,56 @@ export function App() {
       );
       setSelectedPaths([]);
       setLastFocusedIndex(null);
-      setStatus(`Deleted ${selectedPaths.length} files.`);
     } catch (error) {
-      setStatus(`Delete failed: ${formatError(error)}`);
+      alertError(`Delete failed: ${formatError(error)}`);
+    }
+  }
+
+  async function renameFile(path: string, title: string): Promise<boolean> {
+    if (!isTauriRuntimeAvailable()) {
+      alertError(
+        "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
+      );
+      return false;
+    }
+
+    if (!folderPath.trim()) {
+      alertError("Load a folder before renaming files.");
+      return false;
+    }
+
+    const saved = await saveSelectedIfNeeded();
+    if (!saved) {
+      return false;
+    }
+
+    try {
+      const renamedFile = await invoke<ProjectFile>("rename_file", {
+        payload: {
+          folderPath: folderPath.trim(),
+          path,
+          title,
+        },
+      });
+
+      setFiles((current) =>
+        current.map((file) => (file.path === path ? renamedFile : file)),
+      );
+      setSelectedPaths((current) =>
+        current.map((selectedPath) =>
+          selectedPath === path ? renamedFile.path : selectedPath,
+        ),
+      );
+      return true;
+    } catch (error) {
+      alertError(`Rename failed: ${formatError(error)}`);
+      return false;
     }
   }
 
   async function reorderFiles(dragSourcePath: string, insertionIndex: number) {
     if (!isTauriRuntimeAvailable()) {
-      setStatus(
+      alertError(
         "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
       );
       return;
@@ -418,9 +514,8 @@ export function App() {
           ? nextFocusedIndex
           : null,
       );
-      setStatus(`Reordered ${movingPaths.length} file(s).`);
     } catch (error) {
-      setStatus(`Reorder failed: ${formatError(error)}`);
+      alertError(`Reorder failed: ${formatError(error)}`);
     }
   }
 
@@ -464,51 +559,84 @@ export function App() {
     return () => {
       window.removeEventListener("blur", handleBlur);
     };
-  }, [dirty, manuscript, selectedPaths, files]);
+  }, [dirty, manuscript, selectedPaths, files, segments]);
+
+  useEffect(() => {
+    openFolderDialogRef.current = () => {
+      void openFolderDialog();
+    };
+    saveSelectedRef.current = () => {
+      void saveSelected();
+    };
+  });
+
+  useEffect(() => {
+    if (!isTauriRuntimeAvailable()) {
+      return;
+    }
+
+    const handleOpenFolder = () => openFolderDialogRef.current();
+    const handleSave = () => saveSelectedRef.current();
+
+    window.addEventListener("letrum:open-folder", handleOpenFolder);
+    window.addEventListener("letrum:save", handleSave);
+
+    void (async () => {
+      try {
+        const menu = await Menu.new({
+          items: [
+            {
+              text: "File",
+              items: [
+                {
+                  id: "open-folder",
+                  text: "Open Folder...",
+                  accelerator: "CmdOrCtrl+O",
+                  action: () => {
+                    window.dispatchEvent(new Event("letrum:open-folder"));
+                  },
+                },
+                { item: "Separator" },
+                {
+                  id: "save",
+                  text: "Save",
+                  accelerator: "CmdOrCtrl+S",
+                  action: () => {
+                    window.dispatchEvent(new Event("letrum:save"));
+                  },
+                },
+                { item: "Separator" },
+                { item: "Quit", text: "Quit" },
+              ],
+            },
+            {
+              text: "Edit",
+              items: [
+                { item: "Undo" },
+                { item: "Redo" },
+                { item: "Separator" },
+                { item: "Cut" },
+                { item: "Copy" },
+                { item: "Paste" },
+                { item: "SelectAll" },
+              ],
+            },
+          ],
+        });
+        await menu.setAsAppMenu();
+      } catch (error) {
+        alertError(`Menu setup failed: ${formatError(error)}`);
+      }
+    })();
+
+    return () => {
+      window.removeEventListener("letrum:open-folder", handleOpenFolder);
+      window.removeEventListener("letrum:save", handleSave);
+    };
+  }, []);
 
   return (
     <div className="app-shell">
-      <header className="toolbar">
-        <div className="toolbar__path">
-          <label htmlFor="folderPath">Folder</label>
-          <input
-            id="folderPath"
-            value={folderPath}
-            onChange={(event) => setFolderPath(event.target.value)}
-            placeholder="/absolute/path/to/manuscript"
-          />
-        </div>
-        <button type="button" onClick={loadFolder} disabled={loading}>
-          Load Folder
-        </button>
-        <button type="button" onClick={selectAll} disabled={files.length === 0}>
-          Select All
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            void saveSelected();
-          }}
-          disabled={saving || selectedPaths.length === 0}
-        >
-          Save
-        </button>
-        <div className="toolbar__meta">
-          <span>{selectedCount} selected</span>
-          <span>
-            {showingSelectionStats ? "Selection" : "Project"}: {activeStats.words} words,{" "}
-            {activeStats.chars} chars
-          </span>
-          {showingSelectionStats ? (
-            <span>
-              Total: {totalStats.words} words, {totalStats.chars} chars
-            </span>
-          ) : null}
-          <span>{dirty ? "Unsaved changes" : "Saved"}</span>
-          <span>{status}</span>
-        </div>
-      </header>
-
       <main className="workspace">
         <Sidebar
           files={files}
@@ -519,6 +647,7 @@ export function App() {
           onClearSelection={clearSelection}
           onCreateFile={createFile}
           onDeleteSelected={deleteSelected}
+          onRenameFile={renameFile}
           onPointerDragStart={(path) => {
             pointerDragSourceRef.current = path;
             setDropIndex(null);
@@ -555,8 +684,12 @@ export function App() {
         <section className="editor-panel">
           <Editor
             value={manuscript}
+            segments={segments}
             readOnly={selectedPaths.length === 0}
-            onChange={setManuscript}
+            onChange={(nextManuscript, nextSegments) => {
+              setManuscript(nextManuscript);
+              setSegments(nextSegments);
+            }}
             blurSignal={selectedPaths.join("\n")}
             onBlur={() => {
               void saveSelectedIfNeeded();
@@ -564,6 +697,21 @@ export function App() {
           />
         </section>
       </main>
+
+      <footer className="statusbar">
+        <span className="statusbar__folder" title={folderPath || undefined}>
+          {formatFolderLabel(folderPath)}
+        </span>
+        <div className="statusbar__stats" aria-label="Document statistics">
+          <span>
+            <strong>{formatCount(activeStats.words)}</strong> words
+          </span>
+          <span>
+            <strong>{formatCount(activeStats.chars)}</strong> chars
+          </span>
+        </div>
+        <span className="statusbar__save-state">{saveStateLabel}</span>
+      </footer>
     </div>
   );
 }

@@ -1,11 +1,53 @@
 :root {
-  color: #e8ecf3;
-  background: #0d1117;
+  color-scheme: light dark;
+  --app-bg: #f5f3ee;
+  --app-bg-soft: #ebe7df;
+  --app-text: #222224;
+  --app-text-muted: #6b6e75;
+  --app-border: rgba(36, 34, 30, 0.12);
+  --app-panel: rgba(255, 255, 255, 0.78);
+  --app-panel-solid: #f7f5f0;
+  --app-button-bg: #ece8df;
+  --app-button-border: #cec7bc;
+  --app-selected-bg: rgba(42, 96, 178, 0.12);
+  --app-selected-border: rgba(42, 96, 178, 0.28);
+  --app-drop: #b7791f;
+  --editor-text: #202124;
+  --editor-selection: rgba(42, 96, 178, 0.24);
+  --editor-cursor: #1f5fbf;
+  --marker-text: #737985;
+  --marker-bg: rgba(255, 255, 255, 0.68);
+  --marker-shadow: rgba(36, 34, 30, 0.08);
+  color: var(--app-text);
+  background: var(--app-bg);
   font-family:
     "SF Pro Text",
     "Segoe UI",
     sans-serif;
   line-height: 1.4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --app-bg: #0d1117;
+    --app-bg-soft: #121a24;
+    --app-text: #e8ecf3;
+    --app-text-muted: #9aa7ba;
+    --app-border: rgba(255, 255, 255, 0.08);
+    --app-panel: rgba(10, 14, 20, 0.82);
+    --app-panel-solid: #18202b;
+    --app-button-bg: #18202b;
+    --app-button-border: #2f3b4d;
+    --app-selected-bg: rgba(124, 156, 255, 0.18);
+    --app-selected-border: rgba(124, 156, 255, 0.35);
+    --app-drop: #ffd278;
+    --editor-text: #c6ccd6;
+    --editor-selection: rgba(124, 156, 255, 0.28);
+    --editor-cursor: #7c9cff;
+    --marker-text: #9aa9bf;
+    --marker-bg: rgba(255, 255, 255, 0.05);
+    --marker-shadow: rgba(0, 0, 0, 0.12);
+  }
 }
 
 * {
@@ -25,8 +67,8 @@ input {
 }
 
 button {
-  border: 1px solid #2f3b4d;
-  background: #18202b;
+  border: 1px solid var(--app-button-border);
+  background: var(--app-button-bg);
   color: inherit;
   border-radius: 8px;
   padding: 0.65rem 0.95rem;
@@ -39,8 +81,8 @@ button:disabled {
 }
 
 input {
-  border: 1px solid #2f3b4d;
-  background: #10161f;
+  border: 1px solid var(--app-button-border);
+  background: var(--app-panel-solid);
   color: inherit;
   border-radius: 8px;
   padding: 0.7rem 0.85rem;
@@ -48,47 +90,54 @@ input {
 
 .app-shell {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: 1fr auto;
   height: 100%;
   background:
-    radial-gradient(circle at top left, rgba(120, 147, 255, 0.18), transparent 28%),
-    linear-gradient(180deg, #0b1016 0%, #121a24 100%);
+    radial-gradient(circle at top left, rgba(120, 147, 255, 0.12), transparent 28%),
+    linear-gradient(180deg, var(--app-bg) 0%, var(--app-bg-soft) 100%);
 }
 
-.toolbar {
-  display: flex;
-  gap: 0.75rem;
+.statusbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 1rem;
   align-items: center;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(10, 14, 20, 0.82);
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-panel);
   backdrop-filter: blur(18px);
+  color: var(--app-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.toolbar__path {
-  display: grid;
-  gap: 0.35rem;
-  min-width: min(28rem, 45vw);
+.statusbar__folder {
+  justify-self: start;
+  max-width: min(28rem, 34vw);
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.toolbar__path label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #93a0b3;
+.statusbar__stats {
+  display: flex;
+  gap: 1.3rem;
+  justify-self: center;
+  align-items: baseline;
+  color: var(--app-text-muted);
+  font-size: 0.95rem;
 }
 
-.toolbar__path input {
-  width: 100%;
+.statusbar__stats strong {
+  color: var(--app-text);
+  font-size: 1rem;
+  font-weight: 700;
 }
 
-.toolbar__meta {
-  display: grid;
-  gap: 0.15rem;
-  margin-left: auto;
-  min-width: 14rem;
-  color: #9aa7ba;
-  font-size: 0.9rem;
+.statusbar__save-state {
+  justify-self: end;
 }
 
 .workspace {
@@ -98,8 +147,8 @@ input {
 }
 
 .sidebar {
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 11, 16, 0.76);
+  border-right: 1px solid var(--app-border);
+  background: color-mix(in srgb, var(--app-panel) 88%, transparent);
   min-height: 0;
   display: grid;
   grid-template-rows: auto 1fr;
@@ -146,12 +195,12 @@ input {
 }
 
 .file-row:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--app-text) 6%, transparent);
 }
 
 .file-row--selected {
-  background: rgba(124, 156, 255, 0.18);
-  box-shadow: inset 0 0 0 1px rgba(124, 156, 255, 0.35);
+  background: var(--app-selected-bg);
+  box-shadow: inset 0 0 0 1px var(--app-selected-border);
 }
 
 .drop-slot {
@@ -172,12 +221,28 @@ input {
 }
 
 .drop-slot--active::after {
-  background: #ffd278;
-  box-shadow: 0 0 0 1px rgba(255, 210, 120, 0.18);
+  background: var(--app-drop);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-drop) 28%, transparent);
 }
 
 .file-row span {
   word-break: break-word;
+}
+
+.file-row--editing {
+  background: var(--app-selected-bg);
+  box-shadow: inset 0 0 0 1px var(--app-selected-border);
+}
+
+.file-row--editing input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: transparent;
+  color: var(--app-text);
+  outline: none;
 }
 
 .editor-panel {
@@ -195,32 +260,52 @@ input {
   box-shadow: none;
 }
 
-.editor .cm-editor {
+.editor .ProseMirror {
   height: 100%;
   background: transparent;
+  color: var(--editor-text);
+  outline: none;
+  overflow: auto;
+  padding: 0 0 3rem;
 }
 
-.editor .cm-content {
-  padding: 2rem 0 3rem;
+.editor .ProseMirror ::selection {
+  background: var(--editor-selection);
 }
 
-.editor .cm-scroller {
+.editor .ProseMirror-selectednode {
+  outline: none;
+}
+
+.editor .ProseMirror-focused {
+  caret-color: var(--editor-cursor);
+}
+
+.editor .ProseMirror.editor--blurred {
+  caret-color: transparent;
+}
+
+.manuscript-segment {
+  display: block;
   font-family:
     "Iowan Old Style",
     "Palatino Linotype",
     serif;
   font-size: 1.05rem;
   line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.editor .cm-line {
+.manuscript-segment__content {
+  min-height: 1.7em;
   padding-left: 2rem;
   padding-right: 2rem;
 }
 
 .manuscript-marker {
   display: block;
-  padding: 0.35rem 2rem;
+  padding: 0 2rem 0.35rem;
 }
 
 .manuscript-marker__label {
@@ -229,27 +314,27 @@ input {
   font-family:
     "SF Pro Text",
     "Segoe UI",
-    sans-serif;
+  sans-serif;
   font-size: 0.78rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #9aa9bf;
+  letter-spacing: 0.08em;
+  color: var(--marker-text);
   white-space: nowrap;
   padding: 0.6rem 1rem;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--marker-bg);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
-    0 1px 0 rgba(0, 0, 0, 0.12);
+    inset 0 0 0 1px var(--app-border),
+    0 1px 0 var(--marker-shadow);
 }
 
 @media (max-width: 900px) {
-  .toolbar {
-    flex-wrap: wrap;
+  .statusbar {
+    gap: 0.8rem;
+    grid-template-columns: 1fr auto;
   }
 
-  .toolbar__path {
-    min-width: 100%;
+  .statusbar__folder {
+    display: none;
   }
 
   .workspace {
@@ -259,6 +344,6 @@ input {
 
   .sidebar {
     border-right: 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--app-border);
   }
 }

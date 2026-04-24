@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +28,14 @@ struct CreateFilePayload {
 #[derive(Deserialize)]
 struct DeleteFilePayload {
     path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameFilePayload {
+    folder_path: String,
+    path: String,
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -81,7 +89,10 @@ fn strip_numeric_prefix(name: &str) -> &str {
         index += 1;
     }
 
-    if index > 0 && index < bytes.len() && (bytes[index] == b'_' || bytes[index] == b'-' || bytes[index] == b' ') {
+    if index > 0
+        && index < bytes.len()
+        && (bytes[index] == b'_' || bytes[index] == b'-' || bytes[index] == b' ')
+    {
         index += 1;
     }
 
@@ -90,6 +101,24 @@ fn strip_numeric_prefix(name: &str) -> &str {
     } else {
         name
     }
+}
+
+fn numeric_prefix(name: &str) -> &str {
+    let bytes = name.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+
+    if index > 0
+        && index < bytes.len()
+        && (bytes[index] == b'_' || bytes[index] == b'-' || bytes[index] == b' ')
+    {
+        index += 1;
+    }
+
+    &name[..index]
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -166,7 +195,11 @@ fn reorder_files_internal(root: &Path, ordered_paths: &[String]) -> Result<Reord
     Ok(ReorderResult { files, path_map })
 }
 
-fn collect_files(root: &Path, current: &Path, results: &mut Vec<ProjectFile>) -> Result<(), String> {
+fn collect_files(
+    root: &Path,
+    current: &Path,
+    results: &mut Vec<ProjectFile>,
+) -> Result<(), String> {
     let entries = fs::read_dir(current).map_err(|error| error.to_string())?;
 
     for entry in entries {
@@ -278,6 +311,78 @@ fn delete_file(payload: DeleteFilePayload) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn rename_file(payload: RenameFilePayload) -> Result<ProjectFile, String> {
+    let root = PathBuf::from(&payload.folder_path);
+
+    if !root.exists() || !root.is_dir() {
+        return Err("Folder does not exist.".into());
+    }
+
+    let original = PathBuf::from(&payload.path);
+    if !original.exists() || !original.is_file() {
+        return Err("File does not exist.".into());
+    }
+
+    original
+        .strip_prefix(&root)
+        .map_err(|_| "File is outside the project folder.".to_string())?;
+
+    let parent = original
+        .parent()
+        .ok_or_else(|| "File has no parent directory.".to_string())?;
+
+    let file_name = original
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Invalid file name.".to_string())?;
+
+    let extension = original
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "File has no extension.".to_string())?;
+
+    let mut title = payload.title.trim().to_string();
+    let extension_suffix = format!(".{}", extension);
+    if title
+        .to_lowercase()
+        .ends_with(&extension_suffix.to_lowercase())
+    {
+        title.truncate(title.len() - extension_suffix.len());
+        title = title.trim().to_string();
+    }
+
+    if title.is_empty() {
+        return Err("File title cannot be empty.".into());
+    }
+
+    if title.contains('/') || title.contains('\\') || title == "." || title == ".." {
+        return Err("File title cannot contain path separators.".into());
+    }
+
+    let new_file_name = format!("{}{}.{}", numeric_prefix(file_name), title, extension);
+    let new_path = parent.join(new_file_name);
+
+    if new_path != original && new_path.exists() {
+        return Err("File already exists.".into());
+    }
+
+    fs::rename(&original, &new_path).map_err(|error| error.to_string())?;
+
+    let content = fs::read_to_string(&new_path).map_err(|error| error.to_string())?;
+    let relative_path = new_path
+        .strip_prefix(&root)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    Ok(ProjectFile {
+        path: new_path.to_string_lossy().into_owned(),
+        relative_path,
+        content,
+    })
+}
+
+#[tauri::command]
 fn reorder_files(payload: ReorderFilesPayload) -> Result<ReorderResult, String> {
     let root = PathBuf::from(&payload.folder_path);
 
@@ -289,7 +394,9 @@ fn reorder_files(payload: ReorderFilesPayload) -> Result<ReorderResult, String> 
 }
 
 #[tauri::command]
-fn create_and_insert_file(payload: CreateAndInsertFilePayload) -> Result<CreateAndInsertResult, String> {
+fn create_and_insert_file(
+    payload: CreateAndInsertFilePayload,
+) -> Result<CreateAndInsertResult, String> {
     let root = PathBuf::from(&payload.folder_path);
 
     if !root.exists() || !root.is_dir() {
@@ -377,12 +484,14 @@ fn save_app_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             load_project,
             save_project,
             create_file,
             create_and_insert_file,
             delete_file,
+            rename_file,
             reorder_files,
             load_app_settings,
             save_app_settings

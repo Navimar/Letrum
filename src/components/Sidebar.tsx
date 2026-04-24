@@ -1,4 +1,6 @@
-import type { MouseEvent } from "react";
+import { useRef, useState } from "react";
+import { fileTitleFor } from "../lib/manuscript";
+import type { FormEvent, KeyboardEvent, MouseEvent } from "react";
 import type { ProjectFile } from "../lib/types";
 
 type SidebarProps = {
@@ -14,6 +16,7 @@ type SidebarProps = {
   onClearSelection: () => void;
   onCreateFile: () => void;
   onDeleteSelected: () => void;
+  onRenameFile: (path: string, title: string) => Promise<boolean>;
   onPointerDragStart: (path: string) => void;
   onPointerDragEnd: () => void;
   onSetDropIndex: (index: number) => void;
@@ -28,11 +31,61 @@ export function Sidebar({
   onClearSelection,
   onCreateFile,
   onDeleteSelected,
+  onRenameFile,
   onPointerDragStart,
   onPointerDragEnd,
   onSetDropIndex,
 }: SidebarProps) {
   const selectedSet = new Set(selectedPaths);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const skipNextSubmitRef = useRef(false);
+  const submittingRef = useRef(false);
+
+  function startEditing(file: ProjectFile) {
+    setEditingPath(file.path);
+    setDraftTitle(fileTitleFor(file.relativePath));
+  }
+
+  function cancelEditing() {
+    setEditingPath(null);
+    setDraftTitle("");
+  }
+
+  async function submitEditing(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    if (skipNextSubmitRef.current) {
+      skipNextSubmitRef.current = false;
+      return;
+    }
+
+    if (!editingPath) {
+      return;
+    }
+
+    if (submittingRef.current) {
+      return;
+    }
+
+    submittingRef.current = true;
+    try {
+      const renamed = await onRenameFile(editingPath, draftTitle);
+      if (renamed) {
+        cancelEditing();
+      }
+    } finally {
+      submittingRef.current = false;
+    }
+  }
+
+  function handleEditKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      skipNextSubmitRef.current = true;
+      cancelEditing();
+    }
+  }
 
   return (
     <aside className="sidebar">
@@ -64,21 +117,37 @@ export function Sidebar({
         />
         {files.map((file, index) => (
           <div key={file.path} className="file-entry">
-            <button
-              type="button"
-              className={`file-row${selectedSet.has(file.path) ? " file-row--selected" : ""}`}
-              onClick={(event) => onRowClick(file.path, index, event)}
-              onMouseDown={(event) => {
-                if (event.button !== 0) {
-                  return;
-                }
-                onPointerDragStart(file.path);
-              }}
-              onMouseUp={() => onPointerDragEnd()}
-              title={file.relativePath}
-            >
-              <span>{file.relativePath}</span>
-            </button>
+            {editingPath === file.path ? (
+              <form className="file-row file-row--editing" onSubmit={submitEditing}>
+                <input
+                  value={draftTitle}
+                  autoFocus
+                  onBlur={() => {
+                    void submitEditing();
+                  }}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onFocus={(event) => event.target.select()}
+                  onKeyDown={handleEditKeyDown}
+                />
+              </form>
+            ) : (
+              <button
+                type="button"
+                className={`file-row${selectedSet.has(file.path) ? " file-row--selected" : ""}`}
+                onClick={(event) => onRowClick(file.path, index, event)}
+                onDoubleClick={() => startEditing(file)}
+                onMouseDown={(event) => {
+                  if (event.button !== 0) {
+                    return;
+                  }
+                  onPointerDragStart(file.path);
+                }}
+                onMouseUp={() => onPointerDragEnd()}
+                title={file.relativePath}
+              >
+                <span>{fileTitleFor(file.relativePath)}</span>
+              </button>
+            )}
             <div
               className={`drop-slot${dropIndex === index + 1 ? " drop-slot--active" : ""}`}
               onMouseEnter={() => onSetDropIndex(index + 1)}

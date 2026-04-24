@@ -1,106 +1,261 @@
-import { history, historyKeymap } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
 import {
-  Compartment,
+  baseKeymap,
+  newlineInCode,
+} from "prosemirror-commands";
+import {
+  history,
+  redo,
+  undo,
+} from "prosemirror-history";
+import { keymap } from "prosemirror-keymap";
+import {
+  Node as ProseMirrorNode,
+  Schema,
+  type DOMOutputSpec,
+} from "prosemirror-model";
+import {
   EditorState,
-  RangeSetBuilder,
-  StateField,
-} from "@codemirror/state";
-import {
-  Decoration,
-  EditorView,
-  keymap,
-  ViewUpdate,
-  WidgetType,
-} from "@codemirror/view";
-import { oneDark } from "@codemirror/theme-one-dark";
+  Plugin,
+  TextSelection,
+  type Command,
+} from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
+import "prosemirror-view/style/prosemirror.css";
 import { useEffect, useRef } from "react";
-import { parseMarker } from "../lib/manuscript";
+import { fileTitleFor } from "../lib/manuscript";
+import type { ManuscriptSegment } from "../lib/types";
 
 type EditorProps = {
   value: string;
+  segments: ManuscriptSegment[];
   readOnly?: boolean;
-  onChange: (value: string) => void;
+  onChange: (value: string, segments: ManuscriptSegment[]) => void;
   onBlur?: () => void;
   blurSignal?: string;
 };
 
-const readOnlyCompartment = new Compartment();
+type SerializedDocument = {
+  value: string;
+  segments: ManuscriptSegment[];
+};
 
-class MarkerWidget extends WidgetType {
-  constructor(private readonly label: string) {
-    super();
-  }
+const manuscriptSchema = new Schema({
+  nodes: {
+    doc: {
+      content: "file_segment*",
+    },
+    text: {
+      group: "inline",
+    },
+    file_segment: {
+      attrs: {
+        path: { default: "" },
+        relativePath: { default: "" },
+      },
+      code: true,
+      content: "text*",
+      defining: true,
+      group: "block",
+      isolating: true,
+      marks: "",
+      toDOM(node): DOMOutputSpec {
+        const relativePath = String(node.attrs.relativePath ?? "");
 
-  toDOM() {
-    const wrapper = document.createElement("div");
-    wrapper.className = "manuscript-marker";
+        return [
+          "section",
+          {
+            class: "manuscript-segment",
+            "data-file-segment": "true",
+            "data-path": String(node.attrs.path ?? ""),
+          },
+          [
+            "div",
+            { class: "manuscript-marker", contenteditable: "false" },
+            ["div", { class: "manuscript-marker__line" }],
+            ["div", { class: "manuscript-marker__label" }, fileTitleFor(relativePath)],
+            ["div", { class: "manuscript-marker__line" }],
+          ],
+          ["div", { class: "manuscript-segment__content" }, 0],
+        ];
+      },
+      parseDOM: [
+        {
+          tag: "section[data-file-segment]",
+          getAttrs(dom) {
+            if (!(dom instanceof HTMLElement)) {
+              return false;
+            }
 
-    const line = document.createElement("div");
-    line.className = "manuscript-marker__line";
+            return {
+              path: dom.dataset.path ?? "",
+              relativePath: dom.dataset.relativePath ?? "",
+            };
+          },
+        },
+      ],
+    },
+  },
+  marks: {},
+});
 
-    const text = document.createElement("div");
-    text.className = "manuscript-marker__label";
-    text.textContent = this.label;
+function createFileSegment(segment: ManuscriptSegment, content: string) {
+  const textNode = content.length > 0 ? manuscriptSchema.text(content) : null;
 
-    wrapper.append(line, text, line.cloneNode() as HTMLElement);
-    return wrapper;
-  }
+  return manuscriptSchema.nodes.file_segment.create(
+    {
+      path: segment.path,
+      relativePath: segment.relativePath,
+    },
+    textNode,
+  );
 }
 
-const markerDecorations = StateField.define({
-  create(state) {
-    return buildMarkerDecorations(state);
-  },
-  update(decorations, transaction) {
-    if (!transaction.docChanged) {
-      return decorations;
+function createEditorDoc(
+  value: string,
+  segments: readonly ManuscriptSegment[],
+): ProseMirrorNode {
+  return manuscriptSchema.nodes.doc.create(
+    null,
+    segments.map((segment) =>
+      createFileSegment(segment, value.slice(segment.from, segment.to)),
+    ),
+  );
+}
+
+function serializeEditorDoc(doc: ProseMirrorNode): SerializedDocument {
+  const parts: string[] = [];
+  const segments: ManuscriptSegment[] = [];
+  let position = 0;
+
+  doc.forEach((node) => {
+    if (node.type !== manuscriptSchema.nodes.file_segment) {
+      return;
     }
 
-    return buildMarkerDecorations(transaction.state);
-  },
-  provide(field) {
-    return EditorView.decorations.from(field);
+    const content = node.textContent;
+    const from = position;
+    parts.push(content);
+    position += content.length;
+    segments.push({
+      path: String(node.attrs.path ?? ""),
+      relativePath: String(node.attrs.relativePath ?? ""),
+      from,
+      to: position,
+    });
+  });
+
+  return {
+    value: parts.join(""),
+    segments,
+  };
+}
+
+function sameSegments(
+  left: readonly ManuscriptSegment[],
+  right: readonly ManuscriptSegment[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((segment, index) => {
+      const other = right[index];
+      return (
+        other &&
+        segment.path === other.path &&
+        segment.relativePath === other.relativePath &&
+        segment.from === other.from &&
+        segment.to === other.to
+      );
+    })
+  );
+}
+
+function sameDocument(
+  doc: ProseMirrorNode,
+  value: string,
+  segments: readonly ManuscriptSegment[],
+): boolean {
+  const serialized = serializeEditorDoc(doc);
+  return serialized.value === value && sameSegments(serialized.segments, segments);
+}
+
+function segmentOrder(doc: ProseMirrorNode): string[] {
+  const paths: string[] = [];
+
+  doc.forEach((node) => {
+    if (node.type === manuscriptSchema.nodes.file_segment) {
+      paths.push(String(node.attrs.path ?? ""));
+    }
+  });
+
+  return paths;
+}
+
+function sameSegmentOrder(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((path, index) => path === right[index]);
+}
+
+const keepSegmentStructure = new Plugin({
+  filterTransaction(transaction, state) {
+    if (!transaction.docChanged) {
+      return true;
+    }
+
+    return sameSegmentOrder(segmentOrder(state.doc), segmentOrder(transaction.doc));
   },
 });
 
-function normalizeSelectionPos(state: EditorState, position: number): number {
-  const clamped = Math.max(0, Math.min(position, state.doc.length));
-  const line = state.doc.lineAt(clamped);
+const preventBoundaryBackspace: Command = (state) => {
+  const selection = state.selection;
 
-  if (!parseMarker(line.text)) {
-    return clamped;
+  if (!selection.empty || !(selection instanceof TextSelection)) {
+    return false;
   }
 
-  return Math.min(line.to + 1, state.doc.length);
+  return selection.$from.parentOffset === 0;
+};
+
+const preventBoundaryDelete: Command = (state) => {
+  const selection = state.selection;
+
+  if (!selection.empty || !(selection instanceof TextSelection)) {
+    return false;
+  }
+
+  return selection.$from.parentOffset === selection.$from.parent.content.size;
+};
+
+function createEditorState(value: string, segments: readonly ManuscriptSegment[]) {
+  return EditorState.create({
+    doc: createEditorDoc(value, segments),
+    plugins: [
+      keepSegmentStructure,
+      history(),
+      keymap({
+        Enter: newlineInCode,
+        Backspace: preventBoundaryBackspace,
+        Delete: preventBoundaryDelete,
+        "Mod-z": undo,
+        "Shift-Mod-z": redo,
+        "Mod-y": redo,
+      }),
+      keymap(baseKeymap),
+    ],
+    schema: manuscriptSchema,
+  });
 }
 
-function buildMarkerDecorations(state: EditorState) {
-  const builder = new RangeSetBuilder<Decoration>();
+function blurEditor(view: EditorView) {
+  view.dom.classList.add("editor--blurred");
+  view.dom.blur();
 
-  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
-    const line = state.doc.line(lineNumber);
-    const label = parseMarker(line.text);
-
-    if (!label) {
-      continue;
-    }
-
-    builder.add(
-      line.from,
-      line.to,
-      Decoration.replace({
-        widget: new MarkerWidget(label),
-        block: true,
-      }),
-    );
-  }
-
-  return builder.finish();
+  window.requestAnimationFrame(() => {
+    view.dom.blur();
+  });
 }
 
 export function Editor({
   value,
+  segments,
   readOnly = false,
   onChange,
   onBlur,
@@ -110,46 +265,44 @@ export function Editor({
   const viewRef = useRef<EditorView | null>(null);
   const changeRef = useRef(onChange);
   const blurRef = useRef(onBlur);
+  const readOnlyRef = useRef(readOnly);
 
   changeRef.current = onChange;
   blurRef.current = onBlur;
+  readOnlyRef.current = readOnly;
 
   useEffect(() => {
     if (!containerRef.current) {
       return;
     }
 
-    const updateListener = EditorView.updateListener.of(
-      (update: ViewUpdate) => {
-        if (update.docChanged) {
-          changeRef.current(update.state.doc.toString());
+    let view: EditorView;
+    view = new EditorView(containerRef.current, {
+      state: createEditorState(value, segments),
+      editable: () => !readOnlyRef.current,
+      dispatchTransaction(transaction) {
+        const nextState = view.state.apply(transaction);
+        view.updateState(nextState);
+
+        if (transaction.docChanged) {
+          const serialized = serializeEditorDoc(nextState.doc);
+          changeRef.current(serialized.value, serialized.segments);
         }
       },
-    );
-
-    const state = EditorState.create({
-      doc: value,
-      extensions: [
-        history(),
-        markdown(),
-        oneDark,
-        keymap.of(historyKeymap),
-        EditorView.lineWrapping,
-        markerDecorations,
-        EditorView.atomicRanges.of((view) => view.state.field(markerDecorations)),
-        updateListener,
-        EditorView.domEventHandlers({
-          blur: () => {
-            blurRef.current?.();
-          },
-        }),
-        readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
-      ],
-    });
-
-    const view = new EditorView({
-      state,
-      parent: containerRef.current,
+      handleDOMEvents: {
+        focus(currentView) {
+          currentView.dom.classList.remove("editor--blurred");
+          return false;
+        },
+        blur(currentView) {
+          window.requestAnimationFrame(() => {
+            if (!currentView.dom.contains(document.activeElement)) {
+              blurRef.current?.();
+            }
+          });
+          return false;
+        },
+      },
     });
 
     viewRef.current = view;
@@ -162,21 +315,13 @@ export function Editor({
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view) {
+    if (!view || sameDocument(view.state.doc, value, segments)) {
       return;
     }
 
-    const currentValue = view.state.doc.toString();
-    if (currentValue !== value) {
-      view.dispatch({
-        changes: {
-          from: 0,
-          to: currentValue.length,
-          insert: value,
-        },
-      });
-    }
-  }, [value]);
+    blurEditor(view);
+    view.updateState(createEditorState(value, segments));
+  }, [value, segments]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -184,19 +329,19 @@ export function Editor({
       return;
     }
 
-    view.contentDOM.blur();
-  }, [blurSignal]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) {
-      return;
-    }
-
-    view.dispatch({
-      effects: readOnlyCompartment.reconfigure(EditorState.readOnly.of(readOnly)),
+    view.setProps({
+      editable: () => !readOnlyRef.current,
     });
   }, [readOnly]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    blurEditor(view);
+  }, [blurSignal]);
 
   return <div className="editor" ref={containerRef} />;
 }
