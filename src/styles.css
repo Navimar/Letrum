@@ -1,0 +1,264 @@
+:root {
+  color: #e8ecf3;
+  background: #0d1117;
+  font-family:
+    "SF Pro Text",
+    "Segoe UI",
+    sans-serif;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #2f3b4d;
+  background: #18202b;
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.65rem 0.95rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+input {
+  border: 1px solid #2f3b4d;
+  background: #10161f;
+  color: inherit;
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(120, 147, 255, 0.18), transparent 28%),
+    linear-gradient(180deg, #0b1016 0%, #121a24 100%);
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 14, 20, 0.82);
+  backdrop-filter: blur(18px);
+}
+
+.toolbar__path {
+  display: grid;
+  gap: 0.35rem;
+  min-width: min(28rem, 45vw);
+}
+
+.toolbar__path label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #93a0b3;
+}
+
+.toolbar__path input {
+  width: 100%;
+}
+
+.toolbar__meta {
+  display: grid;
+  gap: 0.15rem;
+  margin-left: auto;
+  min-width: 14rem;
+  color: #9aa7ba;
+  font-size: 0.9rem;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(7, 11, 16, 0.76);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.sidebar__header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sidebar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sidebar__list {
+  overflow: auto;
+  padding: 0 0.75rem 1rem;
+}
+
+.file-entry {
+  display: grid;
+  gap: 0;
+}
+
+.file-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.55rem 0.5rem;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.file-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.file-row--selected {
+  background: rgba(124, 156, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(124, 156, 255, 0.35);
+}
+
+.drop-slot {
+  height: 12px;
+  position: relative;
+}
+
+.drop-slot::after {
+  content: "";
+  position: absolute;
+  left: 0.4rem;
+  right: 0.4rem;
+  top: 50%;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transform: translateY(-50%);
+}
+
+.drop-slot--active::after {
+  background: #ffd278;
+  box-shadow: 0 0 0 1px rgba(255, 210, 120, 0.18);
+}
+
+.file-row span {
+  word-break: break-word;
+}
+
+.editor-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 1rem;
+}
+
+.editor {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+}
+
+.editor .cm-editor {
+  height: 100%;
+  background: transparent;
+}
+
+.editor .cm-content {
+  padding: 2rem 0 3rem;
+}
+
+.editor .cm-scroller {
+  font-family:
+    "Iowan Old Style",
+    "Palatino Linotype",
+    serif;
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.editor .cm-line {
+  padding-left: 2rem;
+  padding-right: 2rem;
+}
+
+.manuscript-marker {
+  display: block;
+  padding: 0.35rem 2rem;
+}
+
+.manuscript-marker__label {
+  display: block;
+  width: 100%;
+  font-family:
+    "SF Pro Text",
+    "Segoe UI",
+    sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #9aa9bf;
+  white-space: nowrap;
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 1px 0 rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 900px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar__path {
+    min-width: 100%;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: 240px 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+}
