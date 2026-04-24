@@ -6,6 +6,7 @@ import type { ProjectFile } from "../lib/types";
 type SidebarProps = {
   files: ProjectFile[];
   selectedPaths: string[];
+  activePath: string | null;
   dropIndex: number | null;
   onRowClick: (
     path: string,
@@ -13,7 +14,6 @@ type SidebarProps = {
     event: MouseEvent<HTMLButtonElement>,
   ) => void;
   onSelectAll: () => void;
-  onClearSelection: () => void;
   onCreateFile: () => void;
   onDeleteSelected: () => void;
   onRenameFile: (path: string, title: string) => Promise<boolean>;
@@ -25,10 +25,10 @@ type SidebarProps = {
 export function Sidebar({
   files,
   selectedPaths,
+  activePath,
   dropIndex,
   onRowClick,
   onSelectAll,
-  onClearSelection,
   onCreateFile,
   onDeleteSelected,
   onRenameFile,
@@ -90,23 +90,22 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar__header">
-        <h2>Files</h2>
         <div className="sidebar__actions">
-          <button type="button" onClick={onCreateFile}>
-            New File
+          <button type="button" onClick={onSelectAll} title="Select all" aria-label="Select all">
+            📚
+          </button>
+          <button type="button" onClick={onCreateFile} title="New file" aria-label="New file">
+            ➕
           </button>
           <button
             type="button"
+            className="sidebar__action--danger"
             onClick={onDeleteSelected}
             disabled={selectedPaths.length === 0}
+            title="Delete selected"
+            aria-label="Delete selected"
           >
-            Delete
-          </button>
-          <button type="button" onClick={onSelectAll}>
-            Select All
-          </button>
-          <button type="button" onClick={onClearSelection}>
-            Clear
+            🗑️
           </button>
         </div>
       </div>
@@ -133,7 +132,7 @@ export function Sidebar({
             ) : (
               <button
                 type="button"
-                className={`file-row${selectedSet.has(file.path) ? " file-row--selected" : ""}`}
+                className={`file-row${selectedSet.has(file.path) ? " file-row--selected" : ""}${activePath === file.path ? " file-row--active" : ""}`}
                 onClick={(event) => onRowClick(file.path, index, event)}
                 onDoubleClick={() => startEditing(file)}
                 onMouseDown={(event) => {

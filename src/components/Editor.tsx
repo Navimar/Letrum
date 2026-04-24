@@ -20,6 +20,10 @@ import {
   type Command,
 } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
+import {
+  Decoration,
+  DecorationSet,
+} from "prosemirror-view";
 import "prosemirror-view/style/prosemirror.css";
 import { useEffect, useRef } from "react";
 import { fileTitleFor } from "../lib/manuscript";
@@ -30,6 +34,7 @@ type EditorProps = {
   segments: ManuscriptSegment[];
   readOnly?: boolean;
   onChange: (value: string, segments: ManuscriptSegment[]) => void;
+  onActiveSegmentChange?: (path: string | null) => void;
   onBlur?: () => void;
   blurSignal?: string;
 };
@@ -194,6 +199,20 @@ function sameSegmentOrder(left: readonly string[], right: readonly string[]) {
   return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
+function activeSegmentPath(state: EditorState): string | null {
+  const position = state.selection.$from;
+
+  for (let depth = position.depth; depth > 0; depth -= 1) {
+    const node = position.node(depth);
+
+    if (node.type === manuscriptSchema.nodes.file_segment) {
+      return String(node.attrs.path ?? "");
+    }
+  }
+
+  return null;
+}
+
 const keepSegmentStructure = new Plugin({
   filterTransaction(transaction, state) {
     if (!transaction.docChanged) {
@@ -201,6 +220,39 @@ const keepSegmentStructure = new Plugin({
     }
 
     return sameSegmentOrder(segmentOrder(state.doc), segmentOrder(transaction.doc));
+  },
+});
+
+const inlineSelectionHighlight = new Plugin({
+  props: {
+    decorations(state) {
+      if (state.selection.empty) {
+        return DecorationSet.empty;
+      }
+
+      const decorations: Decoration[] = [];
+
+      for (const range of state.selection.ranges) {
+        state.doc.nodesBetween(range.$from.pos, range.$to.pos, (node, position) => {
+          if (!node.isText) {
+            return;
+          }
+
+          const from = Math.max(range.$from.pos, position);
+          const to = Math.min(range.$to.pos, position + node.nodeSize);
+
+          if (from < to) {
+            decorations.push(
+              Decoration.inline(from, to, {
+                class: "editor-selection-highlight",
+              }),
+            );
+          }
+        });
+      }
+
+      return DecorationSet.create(state.doc, decorations);
+    },
   },
 });
 
@@ -224,11 +276,26 @@ const preventBoundaryDelete: Command = (state) => {
   return selection.$from.parentOffset === selection.$from.parent.content.size;
 };
 
+const selectWholeManuscript: Command = (state, dispatch) => {
+  const firstSegment = state.doc.firstChild;
+  const lastSegment = state.doc.lastChild;
+
+  if (!firstSegment || !lastSegment) {
+    return true;
+  }
+
+  const from = 1;
+  const to = state.doc.content.size - 1;
+  dispatch?.(state.tr.setSelection(TextSelection.create(state.doc, from, to)));
+  return true;
+};
+
 function createEditorState(value: string, segments: readonly ManuscriptSegment[]) {
   return EditorState.create({
     doc: createEditorDoc(value, segments),
     plugins: [
       keepSegmentStructure,
+      inlineSelectionHighlight,
       history(),
       keymap({
         Enter: newlineInCode,
@@ -237,6 +304,7 @@ function createEditorState(value: string, segments: readonly ManuscriptSegment[]
         "Mod-z": undo,
         "Shift-Mod-z": redo,
         "Mod-y": redo,
+        "Mod-a": selectWholeManuscript,
       }),
       keymap(baseKeymap),
     ],
@@ -258,16 +326,19 @@ export function Editor({
   segments,
   readOnly = false,
   onChange,
+  onActiveSegmentChange,
   onBlur,
   blurSignal,
 }: EditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const changeRef = useRef(onChange);
+  const activeSegmentRef = useRef(onActiveSegmentChange);
   const blurRef = useRef(onBlur);
   const readOnlyRef = useRef(readOnly);
 
   changeRef.current = onChange;
+  activeSegmentRef.current = onActiveSegmentChange;
   blurRef.current = onBlur;
   readOnlyRef.current = readOnly;
 
@@ -288,6 +359,10 @@ export function Editor({
           const serialized = serializeEditorDoc(nextState.doc);
           changeRef.current(serialized.value, serialized.segments);
         }
+
+        if (transaction.selectionSet || transaction.docChanged) {
+          activeSegmentRef.current?.(activeSegmentPath(nextState));
+        }
       },
       handleDOMEvents: {
         focus(currentView) {
@@ -306,6 +381,7 @@ export function Editor({
     });
 
     viewRef.current = view;
+    activeSegmentRef.current?.(activeSegmentPath(view.state));
 
     return () => {
       view.destroy();
@@ -320,7 +396,9 @@ export function Editor({
     }
 
     blurEditor(view);
-    view.updateState(createEditorState(value, segments));
+    const nextState = createEditorState(value, segments);
+    view.updateState(nextState);
+    activeSegmentRef.current?.(activeSegmentPath(nextState));
   }, [value, segments]);
 
   useEffect(() => {

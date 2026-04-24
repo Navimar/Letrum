@@ -69,6 +69,13 @@ struct ReorderResult {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SaveResult {
+    files: Vec<ProjectFile>,
+    path_map: Vec<PathMapping>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateAndInsertResult {
     files: Vec<ProjectFile>,
     path_map: Vec<PathMapping>,
@@ -80,6 +87,8 @@ struct CreateAndInsertResult {
 struct AppSettings {
     last_opened_folder: Option<String>,
 }
+
+const AUTO_TITLE_MAX_CHARS: usize = 48;
 
 fn strip_numeric_prefix(name: &str) -> &str {
     let bytes = name.as_bytes();
@@ -119,6 +128,87 @@ fn numeric_prefix(name: &str) -> &str {
     }
 
     &name[..index]
+}
+
+fn is_standard_generated_title(title: &str) -> bool {
+    title == "new-scene"
+}
+
+fn truncate_title(title: &str, max_chars: usize) -> String {
+    title.chars().take(max_chars).collect::<String>()
+}
+
+fn sanitized_auto_title(content: &str) -> Option<String> {
+    let normalized = content.replace("\r\n", "\n");
+    let first_sentence = normalized.split('.').next()?.trim();
+
+    if first_sentence.is_empty() {
+        return None;
+    }
+
+    let mut title = String::new();
+    let mut previous_was_space = false;
+
+    for character in truncate_title(first_sentence, AUTO_TITLE_MAX_CHARS).chars() {
+        let safe_character = match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        };
+
+        if safe_character.is_whitespace() {
+            if !previous_was_space {
+                title.push(' ');
+                previous_was_space = true;
+            }
+            continue;
+        }
+
+        title.push(safe_character);
+        previous_was_space = false;
+    }
+
+    let title = title.trim().trim_matches('.').trim().to_string();
+
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
+}
+
+fn unique_path(parent: &Path, file_name: &str, extension: &str, original: &Path) -> PathBuf {
+    let mut candidate = parent.join(format!("{}.{}", file_name, extension));
+
+    if candidate == original || !candidate.exists() {
+        return candidate;
+    }
+
+    let mut index = 2usize;
+    loop {
+        candidate = parent.join(format!("{} {}.{}", file_name, index, extension));
+
+        if candidate == original || !candidate.exists() {
+            return candidate;
+        }
+
+        index += 1;
+    }
+}
+
+fn project_file_from_path(root: &Path, path: &Path) -> Result<ProjectFile, String> {
+    let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let relative_path = path
+        .strip_prefix(root)
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    Ok(ProjectFile {
+        path: path.to_string_lossy().into_owned(),
+        relative_path,
+        content,
+    })
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -255,12 +345,63 @@ fn load_project(folder_path: String) -> Result<Vec<ProjectFile>, String> {
 }
 
 #[tauri::command]
-fn save_project(files: Vec<SaveFile>) -> Result<(), String> {
-    for file in files {
-        fs::write(&file.path, file.content).map_err(|error| error.to_string())?;
+fn save_project(folder_path: String, files: Vec<SaveFile>) -> Result<SaveResult, String> {
+    let root = PathBuf::from(folder_path);
+
+    if !root.exists() || !root.is_dir() {
+        return Err("Folder does not exist.".into());
     }
 
-    Ok(())
+    let mut saved_files = Vec::new();
+    let mut path_map = Vec::new();
+
+    for file in files {
+        let original = PathBuf::from(&file.path);
+
+        original
+            .strip_prefix(&root)
+            .map_err(|_| "File is outside the project folder.".to_string())?;
+
+        let parent = original
+            .parent()
+            .ok_or_else(|| "File has no parent directory.".to_string())?;
+
+        let file_stem = original
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Invalid file name.".to_string())?;
+
+        let extension = original
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "File has no extension.".to_string())?;
+
+        let mut target_path = original.clone();
+        let clean_title = strip_numeric_prefix(file_stem);
+
+        if is_standard_generated_title(clean_title) {
+            if let Some(auto_title) = sanitized_auto_title(&file.content) {
+                let target_file_name = format!("{}{}", numeric_prefix(file_stem), auto_title);
+                target_path = unique_path(parent, &target_file_name, extension, &original);
+            }
+        }
+
+        if target_path != original {
+            fs::rename(&original, &target_path).map_err(|error| error.to_string())?;
+            path_map.push(PathMapping {
+                old_path: file.path.clone(),
+                new_path: target_path.to_string_lossy().into_owned(),
+            });
+        }
+
+        fs::write(&target_path, file.content).map_err(|error| error.to_string())?;
+        saved_files.push(project_file_from_path(&root, &target_path)?);
+    }
+
+    Ok(SaveResult {
+        files: saved_files,
+        path_map,
+    })
 }
 
 #[tauri::command]
@@ -432,15 +573,8 @@ fn create_and_insert_file(
             .to_path_buf()
     };
 
-    let mut candidate_index = 1usize;
-    let created_path = loop {
-        let candidate = parent_dir.join(format!("new-scene-{}.md", candidate_index));
-        if !candidate.exists() {
-            fs::write(&candidate, "").map_err(|error| error.to_string())?;
-            break candidate;
-        }
-        candidate_index += 1;
-    };
+    let created_path = parent_dir.join("new-scene.md");
+    fs::write(&created_path, "").map_err(|error| error.to_string())?;
 
     let created_path_string = created_path.to_string_lossy().into_owned();
     let mut ordered_paths = payload.ordered_paths.clone();

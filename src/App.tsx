@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Menu } from "@tauri-apps/api/menu";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Editor } from "./components/Editor";
 import { Sidebar } from "./components/Sidebar";
@@ -11,6 +11,7 @@ import type {
   ManuscriptSegment,
   ProjectFile,
   ReorderResult,
+  SaveResult,
 } from "./lib/types";
 
 function isTauriRuntimeAvailable(): boolean {
@@ -70,6 +71,7 @@ export function App() {
   const [saving, setSaving] = useState(false);
   const [lastFocusedIndex, setLastFocusedIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [activeSegmentPath, setActiveSegmentPath] = useState<string | null>(null);
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
   const pointerDragSourceRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
@@ -116,6 +118,15 @@ export function App() {
     setManuscript(manuscriptDocument.manuscript);
     setSegments(manuscriptDocument.segments);
   }, [manuscriptDocument]);
+
+  useEffect(() => {
+    if (
+      activeSegmentPath &&
+      !selectedPaths.includes(activeSegmentPath)
+    ) {
+      setActiveSegmentPath(null);
+    }
+  }, [activeSegmentPath, selectedPaths]);
 
   useEffect(() => {
     if (!isTauriRuntimeAvailable()) {
@@ -181,13 +192,46 @@ export function App() {
 
     try {
       const payload = savePayload;
-      await invoke("save_project", { files: payload });
+      const result = await invoke<SaveResult>("save_project", {
+        folderPath: folderPath.trim(),
+        files: payload,
+      });
 
       setFiles((current) =>
         current.map((file) => {
-          const updated = payload.find((item) => item.path === file.path);
-          return updated ? { ...file, content: updated.content } : file;
+          const mappedPath =
+            result.pathMap.find((item) => item.oldPath === file.path)?.newPath ??
+            file.path;
+          const updated = result.files.find((item) => item.path === mappedPath);
+          return updated ?? file;
         }),
+      );
+      setSelectedPaths((current) =>
+        current.map(
+          (path) =>
+            result.pathMap.find((item) => item.oldPath === path)?.newPath ?? path,
+        ),
+      );
+      setSegments((current) =>
+        current.map((segment) => {
+          const mappedPath =
+            result.pathMap.find((item) => item.oldPath === segment.path)?.newPath ??
+            segment.path;
+          const updatedFile = result.files.find((file) => file.path === mappedPath);
+
+          return updatedFile
+            ? {
+                ...segment,
+                path: updatedFile.path,
+                relativePath: updatedFile.relativePath,
+              }
+            : segment;
+        }),
+      );
+      setActiveSegmentPath((current) =>
+        current
+          ? result.pathMap.find((item) => item.oldPath === current)?.newPath ?? current
+          : null,
       );
       return true;
     } catch (error) {
@@ -302,10 +346,6 @@ export function App() {
     );
   }
 
-  function clearSelection() {
-    void applySelection([], null);
-  }
-
   async function createFile() {
     if (!isTauriRuntimeAvailable()) {
       alertError(
@@ -357,8 +397,12 @@ export function App() {
       return;
     }
 
-    const confirmed = window.confirm(
+    const confirmed = await confirm(
       `Delete ${selectedPaths.length} selected file(s)?`,
+      {
+        title: "Delete files",
+        kind: "warning",
+      },
     );
     if (!confirmed) {
       return;
@@ -641,10 +685,10 @@ export function App() {
         <Sidebar
           files={files}
           selectedPaths={selectedPaths}
+          activePath={activeSegmentPath}
           dropIndex={dropIndex}
           onRowClick={handleRowClick}
           onSelectAll={selectAll}
-          onClearSelection={clearSelection}
           onCreateFile={createFile}
           onDeleteSelected={deleteSelected}
           onRenameFile={renameFile}
@@ -690,6 +734,7 @@ export function App() {
               setManuscript(nextManuscript);
               setSegments(nextSegments);
             }}
+            onActiveSegmentChange={setActiveSegmentPath}
             blurSignal={selectedPaths.join("\n")}
             onBlur={() => {
               void saveSelectedIfNeeded();

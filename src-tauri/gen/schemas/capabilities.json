@@ -1,1 +1,1 @@
-{"main":{"identifier":"main","description":"Main window desktop permissions.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}
+{"main":{"identifier":"main","description":"Main window desktop permissions.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-message"]}}

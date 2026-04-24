@@ -9,6 +9,11 @@ export type SavePayload = {
   content: string;
 };
 
+export type SaveResult = {
+  files: ProjectFile[];
+  pathMap: PathMapping[];
+};
+
 export type ManuscriptSegment = {
   path: string;
   relativePath: string;

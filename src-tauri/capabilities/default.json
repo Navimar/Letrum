@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "Main window desktop permissions.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-message"]
 }
