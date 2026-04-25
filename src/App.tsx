@@ -1,8 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { Menu } from "@tauri-apps/api/menu";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Editor } from "./components/Editor";
+import {
+  Editor,
+  type EditorHandle,
+} from "./components/Editor";
 import { Sidebar } from "./components/Sidebar";
 import { buildManuscriptDocument, splitManuscript } from "./lib/manuscript";
 import type {
@@ -116,6 +120,7 @@ export function App() {
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [activeSegmentPath, setActiveSegmentPath] = useState<string | null>(null);
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
+  const editorRef = useRef<EditorHandle | null>(null);
   const externalRefreshInFlightRef = useRef(false);
   const metadataSaveInFlightRef = useRef(0);
   const folderPathRef = useRef(folderPath);
@@ -552,6 +557,104 @@ export function App() {
     }
   }
 
+  async function sendSelectionToNewFile() {
+    if (!isTauriRuntimeAvailable()) {
+      alertError(
+        "Tauri runtime is not available. Start the app with `npm run tauri dev`, not `npm run dev`.",
+      );
+      return;
+    }
+
+    if (!folderPath.trim()) {
+      alertError("Load a folder before splitting scenes.");
+      return;
+    }
+
+    const extraction = editorRef.current?.getSelectionExtraction();
+    if (!extraction) {
+      alertError("Select text inside one scene first.");
+      return;
+    }
+
+    const nextPayload = savePayload.map((file) =>
+      file.path === extraction.sourcePath
+        ? {
+            ...file,
+            content:
+              file.content.slice(0, extraction.fromOffset) +
+              file.content.slice(extraction.toOffset),
+          }
+        : file,
+    );
+
+    try {
+      const result = await invoke<CreateAndInsertResult>("extract_selection_to_file", {
+        payload: {
+          folderPath: folderPath.trim(),
+          orderedPaths: files.map((file) => file.path),
+          sourcePath: extraction.sourcePath,
+          files: nextPayload,
+          extractedContent: extraction.text,
+        },
+      });
+      const nextMetadata = remapMetadata(
+        metadata,
+        files,
+        result.files,
+        result.pathMap,
+      );
+      const focusedIndex = result.files.findIndex(
+        (file) => file.path === result.createdPath,
+      );
+
+      setFiles(result.files);
+      setMetadata(nextMetadata);
+      if (result.pathMap.length > 0) {
+        persistProjectMetadata(nextMetadata);
+      }
+      setSelectedPaths([result.createdPath]);
+      setLastFocusedIndex(focusedIndex >= 0 ? focusedIndex : null);
+      setActiveSegmentPath(result.createdPath);
+    } catch (error) {
+      alertError(`Split failed: ${formatError(error)}`);
+    }
+  }
+
+  async function showContextMenu(
+    x: number,
+    y: number,
+    canUseEditorSelection: boolean,
+  ) {
+    if (!isTauriRuntimeAvailable()) {
+      return;
+    }
+
+    try {
+      const canExtractSelection =
+        canUseEditorSelection &&
+        Boolean(editorRef.current?.getSelectionExtraction());
+      const menu = await Menu.new({
+        items: [
+          { item: "Cut" },
+          { item: "Copy" },
+          { item: "Paste" },
+          { item: "Separator" },
+          {
+            text: "Send Selection to New File",
+            enabled: canExtractSelection,
+            action: () => {
+              void sendSelectionToNewFile();
+            },
+          },
+        ],
+      });
+
+      await menu.popup(new LogicalPosition(x, y));
+    } catch (error) {
+      alertError(`Context menu failed: ${formatError(error)}`);
+    }
+  }
+
   async function applySelection(
     nextSelection: string[],
     focusedIndex: number | null,
@@ -969,7 +1072,19 @@ export function App() {
   }, []);
 
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        const isEditorContext =
+          event.target instanceof Element &&
+          Boolean(event.target.closest(".editor"));
+
+        if (isEditorContext) {
+          void showContextMenu(event.clientX, event.clientY, true);
+        }
+      }}
+    >
       <main className="workspace">
         <Sidebar
           files={files}
@@ -1018,6 +1133,7 @@ export function App() {
         />
         <section className="editor-panel">
           <Editor
+            ref={editorRef}
             value={manuscript}
             segments={segments}
             readOnly={selectedPaths.length === 0}

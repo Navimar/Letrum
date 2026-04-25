@@ -53,6 +53,16 @@ struct CreateAndInsertFilePayload {
     selected_paths: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractSelectionToFilePayload {
+    folder_path: String,
+    ordered_paths: Vec<String>,
+    source_path: String,
+    files: Vec<SaveFile>,
+    extracted_content: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PathMapping {
@@ -680,6 +690,110 @@ fn create_and_insert_file(
 }
 
 #[tauri::command]
+fn extract_selection_to_file(
+    payload: ExtractSelectionToFilePayload,
+) -> Result<CreateAndInsertResult, String> {
+    let root = PathBuf::from(&payload.folder_path);
+
+    if !root.exists() || !root.is_dir() {
+        return Err("Folder does not exist.".into());
+    }
+
+    if payload.extracted_content.is_empty() {
+        return Err("No text selected.".into());
+    }
+
+    let source_index = payload
+        .ordered_paths
+        .iter()
+        .position(|path| path == &payload.source_path)
+        .ok_or_else(|| "Source file is not present in the ordered list.".to_string())?;
+    let source_path = PathBuf::from(&payload.source_path);
+
+    source_path
+        .strip_prefix(&root)
+        .map_err(|_| "Source file is outside the project folder.".to_string())?;
+
+    let parent_dir = source_path
+        .parent()
+        .ok_or_else(|| "Source file has no parent directory.".to_string())?
+        .to_path_buf();
+
+    for file in &payload.files {
+        let path = PathBuf::from(&file.path);
+
+        path.strip_prefix(&root)
+            .map_err(|_| "File is outside the project folder.".to_string())?;
+
+        fs::write(path, &file.content).map_err(|error| error.to_string())?;
+    }
+
+    let created_path = unique_path(
+        &parent_dir,
+        "new-scene",
+        "md",
+        &parent_dir.join(".__never_matches__.md"),
+    );
+    fs::write(&created_path, &payload.extracted_content).map_err(|error| error.to_string())?;
+
+    let created_path_string = created_path.to_string_lossy().into_owned();
+    let mut ordered_paths = payload.ordered_paths.clone();
+    ordered_paths.insert(source_index + 1, created_path_string.clone());
+
+    let reorder_result = reorder_files_internal(&root, &ordered_paths)?;
+    let created_final_path = reorder_result
+        .path_map
+        .iter()
+        .find(|mapping| mapping.old_path == created_path_string)
+        .map(|mapping| mapping.new_path.clone())
+        .ok_or_else(|| "Created file mapping not found after reorder.".to_string())?;
+
+    let mut final_created_path = PathBuf::from(&created_final_path);
+    let file_stem = final_created_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Invalid created file name.".to_string())?;
+    let extension = final_created_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Created file has no extension.".to_string())?;
+
+    let mut path_map = reorder_result.path_map;
+    if is_standard_generated_title(strip_numeric_prefix(file_stem)) {
+        if let Some(auto_title) = sanitized_auto_title(&payload.extracted_content) {
+            let target_file_name = format!("{}{}", numeric_prefix(file_stem), auto_title);
+            let target_path = unique_path(
+                final_created_path
+                    .parent()
+                    .ok_or_else(|| "Created file has no parent directory.".to_string())?,
+                &target_file_name,
+                extension,
+                &final_created_path,
+            );
+
+            if target_path != final_created_path {
+                fs::rename(&final_created_path, &target_path).map_err(|error| error.to_string())?;
+                path_map.push(PathMapping {
+                    old_path: created_final_path,
+                    new_path: target_path.to_string_lossy().into_owned(),
+                });
+                final_created_path = target_path;
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_files(&root, &mut files)?;
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    Ok(CreateAndInsertResult {
+        files,
+        path_map,
+        created_path: final_created_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
 fn load_app_settings(app: AppHandle) -> Result<AppSettings, String> {
     let path = settings_path(&app)?;
 
@@ -710,6 +824,7 @@ pub fn run() {
             save_project,
             create_file,
             create_and_insert_file,
+            extract_selection_to_file,
             delete_file,
             rename_file,
             reorder_files,

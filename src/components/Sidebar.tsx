@@ -198,13 +198,18 @@ export function Sidebar({
   const emojiPickerRef = useRef<HTMLDivElement | null>(null);
   const skipNextSubmitRef = useRef(false);
   const submittingRef = useRef(false);
-  const usedEmojis = Array.from(
-    new Set(
-      Object.values(metadata.scenes)
-        .map((scene) => scene.emoji?.trim())
-        .filter((emoji): emoji is string => Boolean(emoji)),
-    ),
-  );
+  const usedEmojiSet = new Set<string>();
+  const usedEmojis = files.reduce<string[]>((emojis, file) => {
+    const emoji = metadata.scenes[file.relativePath]?.emoji?.trim();
+
+    if (!emoji || usedEmojiSet.has(emoji)) {
+      return emojis;
+    }
+
+    usedEmojiSet.add(emoji);
+    emojis.push(emoji);
+    return emojis;
+  }, []);
 
   function setSceneEmoji(emoji: string) {
     onSetSceneEmoji(emoji);

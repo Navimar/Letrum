@@ -14,6 +14,8 @@
   --app-drop: #b7791f;
   --editor-text: #202124;
   --editor-selection: rgba(42, 96, 178, 0.24);
+  --editor-search-match: rgba(210, 167, 35, 0.34);
+  --editor-search-active: rgba(239, 136, 44, 0.55);
   --editor-cursor: #1f5fbf;
   --marker-text: #737985;
   --marker-bg: rgba(255, 255, 255, 0.68);
@@ -43,6 +45,8 @@
     --app-drop: #ffd278;
     --editor-text: #c6ccd6;
     --editor-selection: rgba(124, 156, 255, 0.28);
+    --editor-search-match: rgba(255, 207, 84, 0.28);
+    --editor-search-active: rgba(255, 159, 67, 0.48);
     --editor-cursor: #7c9cff;
     --marker-text: #9aa9bf;
     --marker-bg: rgba(255, 255, 255, 0.05);
@@ -329,12 +333,17 @@ input {
 }
 
 .editor {
+  position: relative;
   height: 100%;
   border: 0;
   border-radius: 0;
   overflow: hidden;
   background: transparent;
   box-shadow: none;
+}
+
+.editor__surface {
+  height: 100%;
 }
 
 .editor .ProseMirror {
@@ -352,6 +361,53 @@ input {
 
 .editor-selection-highlight {
   background: var(--editor-selection);
+}
+
+.editor-search-match {
+  background: var(--editor-search-match);
+}
+
+.editor-search-match--active {
+  background: var(--editor-search-active);
+}
+
+.editor-search {
+  position: absolute;
+  z-index: 20;
+  top: 0.55rem;
+  right: 0.65rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel-solid);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+}
+
+.editor-search input {
+  width: 13rem;
+  height: 1.8rem;
+  border-radius: 6px;
+  padding: 0 0.55rem;
+  font-size: 0.82rem;
+}
+
+.editor-search button {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 6px;
+  padding: 0;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.editor-search__count {
+  min-width: 3.5rem;
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  text-align: center;
 }
 
 .editor .ProseMirror-selectednode {

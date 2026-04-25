@@ -16,6 +16,7 @@ import {
 import {
   EditorState,
   Plugin,
+  PluginKey,
   TextSelection,
   type Command,
 } from "prosemirror-state";
@@ -25,7 +26,13 @@ import {
   DecorationSet,
 } from "prosemirror-view";
 import "prosemirror-view/style/prosemirror.css";
-import { useEffect, useRef } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { fileTitleFor } from "../lib/manuscript";
 import type { ManuscriptSegment } from "../lib/types";
 
@@ -42,6 +49,27 @@ type EditorProps = {
 type SerializedDocument = {
   value: string;
   segments: ManuscriptSegment[];
+};
+
+type SearchMatch = {
+  from: number;
+  to: number;
+};
+
+type SearchState = {
+  matches: SearchMatch[];
+  activeIndex: number;
+};
+
+export type SelectionExtraction = {
+  sourcePath: string;
+  fromOffset: number;
+  toOffset: number;
+  text: string;
+};
+
+export type EditorHandle = {
+  getSelectionExtraction: () => SelectionExtraction | null;
 };
 
 const manuscriptSchema = new Schema({
@@ -102,6 +130,122 @@ const manuscriptSchema = new Schema({
   },
   marks: {},
 });
+
+const searchPluginKey = new PluginKey<SearchState>("search");
+
+const searchHighlight = new Plugin<SearchState>({
+  key: searchPluginKey,
+  state: {
+    init() {
+      return { matches: [], activeIndex: -1 };
+    },
+    apply(transaction, previous) {
+      return transaction.getMeta(searchPluginKey) ?? previous;
+    },
+  },
+  props: {
+    decorations(state) {
+      const searchState = searchPluginKey.getState(state);
+
+      if (!searchState || searchState.matches.length === 0) {
+        return DecorationSet.empty;
+      }
+
+      return DecorationSet.create(
+        state.doc,
+        searchState.matches.map((match, index) =>
+          Decoration.inline(match.from, match.to, {
+            class:
+              index === searchState.activeIndex
+                ? "editor-search-match editor-search-match--active"
+                : "editor-search-match",
+          }),
+        ),
+      );
+    },
+  },
+});
+
+function findSearchMatches(doc: ProseMirrorNode, query: string): SearchMatch[] {
+  const needle = query.toLocaleLowerCase();
+
+  if (!needle) {
+    return [];
+  }
+
+  const matches: SearchMatch[] = [];
+
+  doc.descendants((node, position) => {
+    if (node.type !== manuscriptSchema.nodes.file_segment) {
+      return true;
+    }
+
+    const haystack = node.textContent.toLocaleLowerCase();
+    let index = haystack.indexOf(needle);
+
+    while (index !== -1) {
+      const from = position + 1 + index;
+      matches.push({
+        from,
+        to: from + query.length,
+      });
+      index = haystack.indexOf(needle, index + needle.length);
+    }
+
+    return false;
+  });
+
+  return matches;
+}
+
+function normalizeSearchIndex(index: number, matchCount: number) {
+  if (matchCount === 0) {
+    return -1;
+  }
+
+  return ((index % matchCount) + matchCount) % matchCount;
+}
+
+function scrollPositionIntoEditorView(view: EditorView, position: number) {
+  window.requestAnimationFrame(() => {
+    const editorRect = view.dom.getBoundingClientRect();
+    const positionRect = view.coordsAtPos(position);
+    const targetTop =
+      positionRect.top - editorRect.top + view.dom.scrollTop - view.dom.clientHeight * 0.35;
+
+    view.dom.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: "smooth",
+    });
+  });
+}
+
+function updateSearch(
+  view: EditorView,
+  query: string,
+  activeIndex: number,
+  selectActive: boolean,
+) {
+  const matches = findSearchMatches(view.state.doc, query);
+  const normalizedIndex = normalizeSearchIndex(activeIndex, matches.length);
+  const activeMatch = matches[normalizedIndex];
+  let transaction = view.state.tr.setMeta(searchPluginKey, {
+    matches,
+    activeIndex: normalizedIndex,
+  });
+
+  if (selectActive && activeMatch) {
+    transaction = transaction
+      .setSelection(TextSelection.create(view.state.doc, activeMatch.from, activeMatch.to))
+      .scrollIntoView();
+  }
+
+  view.dispatch(transaction);
+  if (selectActive && activeMatch) {
+    scrollPositionIntoEditorView(view, activeMatch.from);
+  }
+  return matches.length;
+}
 
 function createFileSegment(segment: ManuscriptSegment, content: string) {
   const textNode = content.length > 0 ? manuscriptSchema.text(content) : null;
@@ -200,17 +344,62 @@ function sameSegmentOrder(left: readonly string[], right: readonly string[]) {
 }
 
 function activeSegmentPath(state: EditorState): string | null {
-  const position = state.selection.$from;
+  const cursorPosition = state.selection.from;
+  let activePath: string | null = null;
 
-  for (let depth = position.depth; depth > 0; depth -= 1) {
-    const node = position.node(depth);
-
-    if (node.type === manuscriptSchema.nodes.file_segment) {
-      return String(node.attrs.path ?? "");
+  state.doc.forEach((node, offset) => {
+    if (activePath || node.type !== manuscriptSchema.nodes.file_segment) {
+      return;
     }
+
+    const from = offset + 1;
+    const to = offset + node.nodeSize - 1;
+
+    if (cursorPosition >= from && cursorPosition <= to) {
+      activePath = String(node.attrs.path ?? "");
+    }
+  });
+
+  return activePath;
+}
+
+function selectionExtraction(state: EditorState): SelectionExtraction | null {
+  const selection = state.selection;
+
+  if (selection.empty || !(selection instanceof TextSelection)) {
+    return null;
   }
 
-  return null;
+  const fromPosition = selection.$from;
+  const toPosition = selection.$to;
+
+  if (
+    fromPosition.depth === 0 ||
+    toPosition.depth === 0 ||
+    fromPosition.node(fromPosition.depth) !== toPosition.node(toPosition.depth)
+  ) {
+    return null;
+  }
+
+  const segment = fromPosition.node(fromPosition.depth);
+  if (segment.type !== manuscriptSchema.nodes.file_segment) {
+    return null;
+  }
+
+  const fromOffset = fromPosition.parentOffset;
+  const toOffset = toPosition.parentOffset;
+  const text = segment.textContent.slice(fromOffset, toOffset);
+
+  if (!text) {
+    return null;
+  }
+
+  return {
+    sourcePath: String(segment.attrs.path ?? ""),
+    fromOffset,
+    toOffset,
+    text,
+  };
 }
 
 const keepSegmentStructure = new Plugin({
@@ -296,6 +485,7 @@ function createEditorState(value: string, segments: readonly ManuscriptSegment[]
     plugins: [
       keepSegmentStructure,
       inlineSelectionHighlight,
+      searchHighlight,
       history(),
       keymap({
         Enter: newlineInCode,
@@ -321,7 +511,7 @@ function blurEditor(view: EditorView) {
   });
 }
 
-export function Editor({
+export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor({
   value,
   segments,
   readOnly = false,
@@ -329,18 +519,70 @@ export function Editor({
   onActiveSegmentChange,
   onBlur,
   blurSignal,
-}: EditorProps) {
+}: EditorProps, ref) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const changeRef = useRef(onChange);
   const activeSegmentRef = useRef(onActiveSegmentChange);
   const blurRef = useRef(onBlur);
   const readOnlyRef = useRef(readOnly);
+  const searchMatchCountRef = useRef(0);
+  const lastSelectionExtractionRef = useRef<SelectionExtraction | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchActiveIndex, setSearchActiveIndex] = useState(0);
+  const [searchMatchCount, setSearchMatchCount] = useState(0);
 
   changeRef.current = onChange;
   activeSegmentRef.current = onActiveSegmentChange;
   blurRef.current = onBlur;
   readOnlyRef.current = readOnly;
+
+  useImperativeHandle(ref, () => ({
+    getSelectionExtraction() {
+      const view = viewRef.current;
+      return view
+        ? selectionExtraction(view.state) ?? lastSelectionExtractionRef.current
+        : lastSelectionExtractionRef.current;
+    },
+  }), []);
+
+  function focusSearchInput() {
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }
+
+  function openSearch() {
+    setSearchOpen(true);
+    focusSearchInput();
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchMatchCount(0);
+    searchMatchCountRef.current = 0;
+
+    const view = viewRef.current;
+    if (view) {
+      updateSearch(view, "", -1, false);
+      view.focus();
+    }
+  }
+
+  function moveSearch(delta: number) {
+    const matchCount = searchMatchCountRef.current;
+
+    if (matchCount === 0) {
+      return;
+    }
+
+    setSearchActiveIndex((current) =>
+      normalizeSearchIndex(current + delta, matchCount),
+    );
+  }
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -361,6 +603,13 @@ export function Editor({
         }
 
         if (transaction.selectionSet || transaction.docChanged) {
+          const extraction = selectionExtraction(nextState);
+          if (extraction) {
+            lastSelectionExtractionRef.current = extraction;
+          } else if (transaction.docChanged) {
+            lastSelectionExtractionRef.current = null;
+          }
+
           activeSegmentRef.current?.(activeSegmentPath(nextState));
         }
       },
@@ -390,16 +639,55 @@ export function Editor({
   }, []);
 
   useEffect(() => {
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      const key = event.key.toLowerCase();
+
+      if ((event.metaKey || event.ctrlKey) && key === "f") {
+        event.preventDefault();
+        openSearch();
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && key === "g") {
+        event.preventDefault();
+        moveSearch(event.shiftKey ? -1 : 1);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
     const view = viewRef.current;
     if (!view || sameDocument(view.state.doc, value, segments)) {
       return;
     }
 
     blurEditor(view);
+    lastSelectionExtractionRef.current = null;
     const nextState = createEditorState(value, segments);
     view.updateState(nextState);
     activeSegmentRef.current?.(activeSegmentPath(nextState));
   }, [value, segments]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const nextMatchCount = updateSearch(
+      view,
+      searchOpen ? searchQuery : "",
+      searchActiveIndex,
+      searchOpen && searchQuery.length > 0,
+    );
+    searchMatchCountRef.current = nextMatchCount;
+    setSearchMatchCount(nextMatchCount);
+  }, [searchOpen, searchQuery, searchActiveIndex, value, segments]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -421,5 +709,51 @@ export function Editor({
     blurEditor(view);
   }, [blurSignal]);
 
-  return <div className="editor" ref={containerRef} />;
-}
+  const visibleSearchIndex =
+    searchMatchCount === 0
+      ? 0
+      : normalizeSearchIndex(searchActiveIndex, searchMatchCount) + 1;
+
+  return (
+    <div className="editor">
+      {searchOpen ? (
+        <div className="editor-search">
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              setSearchActiveIndex(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                moveSearch(event.shiftKey ? -1 : 1);
+              }
+
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeSearch();
+              }
+            }}
+            placeholder="Find"
+            aria-label="Find in manuscript"
+          />
+          <span className="editor-search__count">
+            {visibleSearchIndex}/{searchMatchCount}
+          </span>
+          <button type="button" onClick={() => moveSearch(-1)} aria-label="Previous match">
+            ↑
+          </button>
+          <button type="button" onClick={() => moveSearch(1)} aria-label="Next match">
+            ↓
+          </button>
+          <button type="button" onClick={closeSearch} aria-label="Close search">
+            ×
+          </button>
+        </div>
+      ) : null}
+      <div className="editor__surface" ref={containerRef} />
+    </div>
+  );
+});
